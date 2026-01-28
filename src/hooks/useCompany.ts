@@ -45,30 +45,30 @@ export function useCompany() {
 
   const createCompany = useMutation({
     mutationFn: async (name: string) => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('User not authenticated');
 
-      // Create company
-      const { data: company, error: companyError } = await supabase
-        .from('companies')
-        .insert({ name })
-        .select()
-        .single();
+      // Use edge function to create company (bypasses RLS issues)
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-company`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({ name }),
+        }
+      );
 
-      if (companyError) throw companyError;
+      const result = await response.json();
 
-      // Add user as admin
-      const { error: memberError } = await supabase
-        .from('company_members')
-        .insert({
-          company_id: company.id,
-          user_id: user.id,
-          role: 'admin',
-        });
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to create company');
+      }
 
-      if (memberError) throw memberError;
-
-      return company as Company;
+      return result.company as Company;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['companies'] });
