@@ -17,24 +17,30 @@ export type Database = {
       api4com_credentials: {
         Row: {
           api_token: string
+          api4com_domain: string | null
           company_id: string
           created_at: string
           id: string
           updated_at: string
+          webhook_configured: boolean | null
         }
         Insert: {
           api_token: string
+          api4com_domain?: string | null
           company_id: string
           created_at?: string
           id?: string
           updated_at?: string
+          webhook_configured?: boolean | null
         }
         Update: {
           api_token?: string
+          api4com_domain?: string | null
           company_id?: string
           created_at?: string
           id?: string
           updated_at?: string
+          webhook_configured?: boolean | null
         }
         Relationships: [
           {
