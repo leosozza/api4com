@@ -19,8 +19,35 @@ export interface Api4ComCredentials {
   id: string;
   company_id: string;
   api_token: string;
+  api4com_domain?: string;
+  webhook_configured?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// Api4Com WebPhone v1.4 webhook format
+export interface Api4ComWebhookV14 {
+  version: string;
+  eventType: 'channel-hangup' | 'channel-create' | 'channel-answer';
+  id: string;
+  domain: string;
+  direction: 'inbound' | 'outbound';
+  caller: string;
+  called: string;
+  startedAt: string;
+  answeredAt?: string;
+  endedAt: string;
+  duration: number;
+  hangupCause: string;
+  hangupCauseCode: string;
+  recordUrl?: string;
+  metadata?: {
+    gateway?: string;
+    bitrixUserId?: string;
+    companyId?: string;
+    bitrixCallId?: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface Bitrix24Credentials {
