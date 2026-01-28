@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.api4com-setup]
 verify_jwt = false
+
+[functions.create-company]
+verify_jwt = false
