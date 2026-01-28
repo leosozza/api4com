@@ -311,8 +311,8 @@ Deno.serve(async (req) => {
     // Get app URL from environment or use default
     const appUrl = Deno.env.get("APP_URL") || "https://api4com.lovable.app";
     
-    // Return HTML page that loads the app in the iframe
-    // Bitrix24 expects an HTML response, not JSON
+    // Return HTML page that signals installation completion to Bitrix24
+    // Using BX24.installFinish() instead of redirect to maintain SDK context
     const htmlResponse = `
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -375,6 +375,27 @@ Deno.serve(async (req) => {
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
+    .fallback-btn {
+      display: none;
+      margin-top: 20px;
+      padding: 12px 24px;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .fallback-btn:hover {
+      background: #2563eb;
+    }
+    .fallback-text {
+      display: none;
+      color: #9ca3af;
+      font-size: 0.875rem;
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
@@ -383,14 +404,45 @@ Deno.serve(async (req) => {
       <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
     </div>
     <h1>Instalação Concluída!</h1>
-    <p>Redirecionando para o painel de configuração...</p>
-    <div class="spinner"></div>
+    <p id="status-text">Finalizando instalação...</p>
+    <div class="spinner" id="spinner"></div>
+    <button class="fallback-btn" id="fallback-btn" onclick="window.location.href='${appUrl}'">
+      Abrir Aplicativo
+    </button>
+    <p class="fallback-text" id="fallback-text">
+      Clique no botão acima para abrir o aplicativo
+    </p>
   </div>
   <script>
-    // Wait a moment for visual feedback, then redirect to app
+    // Initialize BX24 SDK and signal installation completion
+    BX24.init(function() {
+      console.log('BX24 SDK initialized in installer');
+      
+      // Wait for visual feedback, then signal completion
+      setTimeout(function() {
+        try {
+          // This is the official way to finish Bitrix24 app installation
+          // It closes the installer and allows Bitrix24 to navigate to the app URL
+          BX24.installFinish();
+          console.log('BX24.installFinish() called');
+        } catch (e) {
+          console.error('Error calling installFinish:', e);
+          showFallback();
+        }
+      }, 2000);
+    });
+    
+    // Fallback: Show manual button after 5 seconds if auto-close doesn't work
     setTimeout(function() {
-      window.location.href = "${appUrl}";
-    }, 1500);
+      showFallback();
+    }, 5000);
+    
+    function showFallback() {
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('status-text').textContent = 'Instalação concluída com sucesso!';
+      document.getElementById('fallback-btn').style.display = 'inline-block';
+      document.getElementById('fallback-text').style.display = 'block';
+    }
   </script>
 </body>
 </html>
