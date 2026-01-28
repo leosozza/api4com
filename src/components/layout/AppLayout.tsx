@@ -1,10 +1,12 @@
-import { ReactNode } from 'react';
+import { ReactNode, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Phone, Settings, BarChart3, History, LogOut, Building2 } from 'lucide-react';
+import { Phone, Settings, BarChart3, History, RefreshCw, Building2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
 import { useCompany } from '@/hooks/useCompany';
 import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { toast } from '@/hooks/use-toast';
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -18,8 +20,29 @@ const navItems = [
 
 export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
-  const { user, signOut } = useAuth();
+  const { user, resetSession } = useAuth();
   const { currentCompany } = useCompany();
+  const [isResetting, setIsResetting] = useState(false);
+
+  const handleResetSession = async () => {
+    setIsResetting(true);
+    try {
+      await resetSession();
+      toast({
+        title: 'Sessão resetada',
+        description: 'Uma nova sessão foi criada com sucesso.',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
+      toast({
+        title: 'Erro ao resetar sessão',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -43,11 +66,27 @@ export function AppLayout({ children }: AppLayoutProps) {
 
           <div className="flex items-center gap-2">
             <span className="hidden text-sm text-muted-foreground sm:inline">
-              {user?.email}
+              {user?.email || (user?.is_anonymous ? 'Sessão anônima' : '')}
             </span>
-            <Button variant="ghost" size="icon" onClick={() => signOut()}>
-              <LogOut className="h-4 w-4" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={handleResetSession}
+                  disabled={isResetting}
+                >
+                  {isResetting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Resetar sessão</p>
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </header>

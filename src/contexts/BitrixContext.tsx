@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
 import type { BX24, BX24Auth, BX24CallMethodResult, BX24UserInfo } from '@/types/bitrix24';
 import { supabase } from '@/integrations/supabase/client';
 import type { User } from '@supabase/supabase-js';
@@ -32,6 +32,9 @@ interface BitrixProviderProps {
   children: ReactNode;
 }
 
+// Progressive retry intervals for BX24 SDK detection (in ms)
+const BX24_RETRY_INTERVALS = [1000, 2000, 3000, 4000, 5000]; // Total: 15s max wait
+
 export function BitrixProvider({ children }: BitrixProviderProps) {
   const [state, setState] = useState<BitrixContextState>({
     isInitialized: false,
@@ -44,6 +47,9 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
     error: null,
     supabaseUser: null,
   });
+  
+  const initAttemptedRef = useRef(false);
+  const bx24InitializedRef = useRef(false);
 
   const getBX24 = useCallback((): BX24 | null => {
     return window.BX24 || null;
@@ -134,126 +140,192 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
       const { data: { session } } = await supabase.auth.getSession();
       
       if (session?.user) {
-        console.log('Existing Supabase session found');
+        console.log('[BitrixContext] Existing Supabase session found:', session.user.id);
         return session.user;
       }
 
       // No session - sign in anonymously
-      console.log('No session, signing in anonymously...');
+      console.log('[BitrixContext] No session, signing in anonymously...');
       const { data, error } = await supabase.auth.signInAnonymously();
       
       if (error) {
-        console.error('Anonymous sign-in error:', error);
+        console.error('[BitrixContext] Anonymous sign-in error:', error);
         return null;
       }
       
-      console.log('Anonymous sign-in successful');
+      console.log('[BitrixContext] Anonymous sign-in successful:', data.user?.id);
       return data.user;
     } catch (error) {
-      console.error('Error ensuring Supabase auth:', error);
+      console.error('[BitrixContext] Error ensuring Supabase auth:', error);
       return null;
     }
   }, []);
 
-  // Listen for Supabase auth changes
+  // Listen for Supabase auth changes and re-establish session if signed out
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('[BitrixContext] Auth state changed:', event, session?.user?.id);
       setState(prev => ({ ...prev, supabaseUser: session?.user ?? null }));
+      
+      // If signed out, automatically re-establish anonymous session
+      if (event === 'SIGNED_OUT') {
+        console.log('[BitrixContext] Signed out detected, re-establishing anonymous session...');
+        setTimeout(() => {
+          ensureSupabaseAuth();
+        }, 0);
+      }
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [ensureSupabaseAuth]);
 
-  // Initialize BX24 SDK and Supabase auth
-  useEffect(() => {
-    const initBitrix = async () => {
-      // First, ensure Supabase auth
-      const supabaseUser = await ensureSupabaseAuth();
+  // Initialize BX24 SDK with the given supabase user
+  const initializeBX24 = useCallback(async (supabaseUser: User | null) => {
+    if (bx24InitializedRef.current) {
+      console.log('[BitrixContext] BX24 already initialized, skipping');
+      return;
+    }
+
+    const bx24 = getBX24();
+    
+    if (!bx24) {
+      console.log('[BitrixContext] BX24 SDK not found - running in development mode');
+      setState(prev => ({
+        ...prev,
+        isInitialized: true,
+        isLoading: false,
+        isInBitrix: false,
+        supabaseUser,
+      }));
+      return;
+    }
+
+    bx24InitializedRef.current = true;
+    console.log('[BitrixContext] Initializing BX24 SDK...');
+
+    // Initialize BX24 SDK
+    bx24.init(async () => {
+      console.log('[BitrixContext] BX24 SDK initialized');
       
-      const bx24 = getBX24();
-      
-      if (!bx24) {
-        // Not in Bitrix iframe - development mode
-        console.log('BX24 SDK not found - running in development mode');
+      const auth = bx24.getAuth();
+      const isAdmin = bx24.isAdmin();
+
+      if (!auth) {
         setState(prev => ({
           ...prev,
           isInitialized: true,
           isLoading: false,
-          isInBitrix: false,
+          isInBitrix: true,
           supabaseUser,
+          error: 'Failed to get authentication data',
         }));
         return;
       }
 
-      // Initialize BX24 SDK
-      bx24.init(async () => {
-        console.log('BX24 SDK initialized');
-        
-        const auth = bx24.getAuth();
-        const isAdmin = bx24.isAdmin();
+      // Fetch current user and company
+      let currentUser: BX24UserInfo | null = null;
+      let companyId: string | null = null;
 
-        if (!auth) {
+      try {
+        currentUser = await callMethod<BX24UserInfo>('user.current');
+        companyId = await findOrCreateCompany(auth);
+      } catch (error) {
+        console.error('[BitrixContext] Error during initialization:', error);
+      }
+
+      setState({
+        isInitialized: true,
+        isLoading: false,
+        isInBitrix: true,
+        auth,
+        currentUser,
+        companyId,
+        isAdmin,
+        error: null,
+        supabaseUser,
+      });
+
+      // Fit window to content
+      bx24.fitWindow();
+    });
+  }, [getBX24, callMethod, findOrCreateCompany]);
+
+  // Initialize with progressive retries for BX24 detection
+  useEffect(() => {
+    if (initAttemptedRef.current) return;
+    initAttemptedRef.current = true;
+
+    const startInit = async () => {
+      // First, ensure Supabase auth
+      const supabaseUser = await ensureSupabaseAuth();
+      
+      // If BX24 is already available, initialize immediately
+      if (window.BX24) {
+        console.log('[BitrixContext] BX24 available immediately');
+        initializeBX24(supabaseUser);
+        return;
+      }
+
+      // Progressive retry for BX24 detection
+      let retryIndex = 0;
+      let totalWait = 0;
+      
+      const attemptInit = () => {
+        if (window.BX24) {
+          console.log(`[BitrixContext] BX24 found after ${totalWait}ms`);
+          initializeBX24(supabaseUser);
+          return;
+        }
+
+        if (retryIndex < BX24_RETRY_INTERVALS.length) {
+          const waitTime = BX24_RETRY_INTERVALS[retryIndex];
+          totalWait += waitTime;
+          console.log(`[BitrixContext] BX24 not found, retry ${retryIndex + 1} in ${waitTime}ms (total: ${totalWait}ms)`);
+          retryIndex++;
+          setTimeout(attemptInit, waitTime);
+        } else {
+          // All retries exhausted - fall back to dev mode
+          console.log(`[BitrixContext] BX24 not found after ${totalWait}ms - running in development mode`);
           setState(prev => ({
             ...prev,
             isInitialized: true,
             isLoading: false,
-            isInBitrix: true,
+            isInBitrix: false,
             supabaseUser,
-            error: 'Failed to get authentication data',
           }));
-          return;
         }
+      };
 
-        // Fetch current user and company
-        let currentUser: BX24UserInfo | null = null;
-        let companyId: string | null = null;
-
-        try {
-          currentUser = await callMethod<BX24UserInfo>('user.current');
-          companyId = await findOrCreateCompany(auth);
-        } catch (error) {
-          console.error('Error during initialization:', error);
-        }
-
-        setState({
-          isInitialized: true,
-          isLoading: false,
-          isInBitrix: true,
-          auth,
-          currentUser,
-          companyId,
-          isAdmin,
-          error: null,
-          supabaseUser,
-        });
-
-        // Fit window to content
-        bx24.fitWindow();
-      });
+      // Start retry loop
+      attemptInit();
     };
 
-    // Wait for BX24 script to load
-    if (window.BX24) {
-      initBitrix();
-    } else {
-      // Check periodically for BX24 availability
+    startInit();
+  }, [ensureSupabaseAuth, initializeBX24]);
+
+  // Watch for late BX24 appearance (if it loads after we went to dev mode)
+  useEffect(() => {
+    if (state.isInitialized && !state.isInBitrix && !bx24InitializedRef.current) {
+      // Check periodically if BX24 becomes available
       const checkInterval = setInterval(() => {
         if (window.BX24) {
+          console.log('[BitrixContext] BX24 appeared late, re-initializing...');
           clearInterval(checkInterval);
-          initBitrix();
+          initializeBX24(state.supabaseUser);
         }
-      }, 100);
+      }, 1000);
 
-      // Timeout after 3 seconds - assume development mode
-      setTimeout(() => {
+      // Stop checking after 30 seconds
+      const stopTimeout = setTimeout(() => {
         clearInterval(checkInterval);
-        if (!window.BX24) {
-          console.log('BX24 SDK timeout - running in development mode');
-          initBitrix();
-        }
-      }, 3000);
+      }, 30000);
+
+      return () => {
+        clearInterval(checkInterval);
+        clearTimeout(stopTimeout);
+      };
     }
-  }, [getBX24, callMethod, findOrCreateCompany, ensureSupabaseAuth]);
+  }, [state.isInitialized, state.isInBitrix, state.supabaseUser, initializeBX24]);
 
   const value: BitrixContextValue = {
     ...state,
