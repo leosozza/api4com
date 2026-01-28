@@ -308,17 +308,101 @@ Deno.serve(async (req) => {
 
     console.log("Installation completed for company:", companyId);
 
-    // Return success - Bitrix expects specific response
-    return new Response(
-      JSON.stringify({ 
-        success: true,
-        company_id: companyId,
-      }),
-      { 
-        status: 200, 
-        headers: { ...corsHeaders, "Content-Type": "application/json" } 
-      }
-    );
+    // Get app URL from environment or use default
+    const appUrl = Deno.env.get("APP_URL") || "https://api4com.lovable.app";
+    
+    // Return HTML page that loads the app in the iframe
+    // Bitrix24 expects an HTML response, not JSON
+    const htmlResponse = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Api4Com - Instalação</title>
+  <script src="https://api.bitrix24.com/api/v1/"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      text-align: center;
+      padding: 40px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      max-width: 400px;
+    }
+    .success-icon {
+      width: 64px;
+      height: 64px;
+      background: #10b981;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+    }
+    .success-icon svg {
+      width: 32px;
+      height: 32px;
+      fill: white;
+    }
+    h1 { 
+      color: #1f2937; 
+      font-size: 1.5rem; 
+      margin-bottom: 10px;
+    }
+    p { 
+      color: #6b7280; 
+      margin-bottom: 20px;
+    }
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid #e5e7eb;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="success-icon">
+      <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+    </div>
+    <h1>Instalação Concluída!</h1>
+    <p>Redirecionando para o painel de configuração...</p>
+    <div class="spinner"></div>
+  </div>
+  <script>
+    // Wait a moment for visual feedback, then redirect to app
+    setTimeout(function() {
+      window.location.href = "${appUrl}";
+    }, 1500);
+  </script>
+</body>
+</html>
+`;
+
+    return new Response(htmlResponse, { 
+      status: 200, 
+      headers: { 
+        ...corsHeaders, 
+        "Content-Type": "text/html; charset=utf-8" 
+      } 
+    });
 
   } catch (error: unknown) {
     console.error("Installation error:", error);
