@@ -1,172 +1,61 @@
 
 
-# Adaptação para Marketplace do Bitrix24
+# Correção das URLs Inacessíveis
 
-## Contexto
-A aplicação atual usa autenticação própria (email/senha) e roda como aplicação standalone. Para funcionar no **Marketplace do Bitrix24**, precisa ser convertida para rodar dentro do iframe do Bitrix, usando o SDK `BX24` e obtendo credenciais automaticamente via OAuth durante a instalação.
+## Problema Identificado
 
----
+Há **dois problemas** que impedem o Bitrix24 de acessar as URLs:
 
-## Mudanças Necessárias
+### 1. Aplicação Não Publicada
+O projeto ainda não foi publicado. Atualmente só existe a URL de preview:
+- **Preview**: `https://id-preview--323edde2-5511-4445-973c-b0c7cd67038e.lovable.app`
+- **Produção**: `https://api4com.lovable.app` (não acessível até publicar)
 
-### 1. Integração com SDK BX24
+**Solução**: Clicar em **Publish** (Publicar) no canto superior direito para ativar o domínio customizado.
 
-**Adicionar script do Bitrix24 no HTML:**
+### 2. Edge Function com Erro de Parsing
+A edge function `bitrix24-install` está acessível, mas tem um bug no tratamento dos dados que o Bitrix24 envia.
+
+O erro nos logs:
 ```text
-index.html -> adicionar script BX24
+SyntaxError: Unexpected end of JSON input
 ```
 
-**Criar hook React para o SDK:**
-- Inicializar `BX24.init()` ao carregar a aplicação
-- Obter dados de autenticação automaticamente do contexto
-- Disponibilizar métodos `BX24.callMethod()` para chamadas REST
-- Detectar se está rodando dentro do iframe do Bitrix
+**Causa**: O Bitrix24 pode enviar campos `auth` e `data` como strings ou como objetos serializados de forma diferente do esperado. O código atual tenta fazer `JSON.parse()` em dados que podem não ser JSON válido.
 
 ---
 
-### 2. Novo Fluxo de Autenticação
+## Plano de Correção
 
-**Substituir login próprio por autenticação via Bitrix:**
-- Quando o app é instalado, o Bitrix envia evento `ONAPPINSTALL` com tokens OAuth
-- Armazenar `access_token`, `refresh_token`, `domain` e `member_id` no banco
-- Usar `member_id` como identificador único da empresa (tenant)
+### Passo 1: Publicar a Aplicação
+Você precisa clicar no botão **Publish** para que a URL `https://api4com.lovable.app` fique acessível.
 
-**Remover:**
-- Tela de login/signup atual (AuthForm)
-- Autenticação email/senha
+### Passo 2: Corrigir a Edge Function
 
-**Adicionar:**
-- Detecção automática do contexto Bitrix
-- Fallback para modo desenvolvimento (sem iframe)
-
----
-
-### 3. Nova Edge Function: `bitrix24-install`
-
-Processar o evento de instalação do app:
-- Receber dados do `ONAPPINSTALL`
-- Criar/atualizar registro da empresa usando `member_id`
-- Salvar credenciais OAuth automaticamente
-- Retornar sucesso para o Bitrix finalizar instalação
-
----
-
-### 4. Ajustes no Banco de Dados
-
-**Modificar tabela `bitrix24_credentials`:**
-- Adicionar coluna `member_id` (identificador único do portal)
-- Adicionar coluna `client_endpoint` (URL REST do portal)
-
-**Ajustar identificação de empresa:**
-- Usar `member_id` do Bitrix como chave de tenant
-- Permitir que uma empresa seja identificada pelo contexto do Bitrix
-
----
-
-### 5. Ajustes no Frontend
-
-**Novo contexto Bitrix:**
-```text
-src/contexts/BitrixContext.tsx
-- Gerenciar estado do BX24
-- Prover dados de autenticação para toda a aplicação
-```
-
-**Simplificar Setup Wizard:**
-- Remover step de credenciais Bitrix (obtido automaticamente)
-- Manter apenas: Api4Com token, mapeamento de usuários, linhas telefônicas
-
-**Adaptar para iframe:**
-- Remover navegação por URL (usar estados)
-- Ajustar layout para funcionar dentro do Bitrix
-
----
-
-### 6. Handlers de Eventos Bitrix
-
-**Registrar webhooks durante instalação:**
-- `ONEXTERNALCALLSTART` - Click-to-call
-- `ONEXTERNALCALLBACKSTART` - Chamada de retorno
-
-**Endpoint para processar eventos:**
-- Atualizar edge function `bitrix24-webhook` para novos eventos
-
----
-
-## Arquitetura Final
+Melhorar o parsing da edge function para lidar com os diferentes formatos que o Bitrix24 pode enviar:
 
 ```text
-+------------------+     ONAPPINSTALL      +-------------------+
-|   Bitrix24       | ------------------->  | bitrix24-install  |
-|   Marketplace    |                       | (Edge Function)   |
-+------------------+                       +-------------------+
-        |                                          |
-        | OAuth tokens                             | Salvar credenciais
-        v                                          v
-+------------------+     BX24.init()       +-------------------+
-|   App no iframe  | <-------------------  | Lovable Cloud     |
-|   (React + BX24) |                       | (Supabase)        |
-+------------------+                       +-------------------+
+supabase/functions/bitrix24-install/index.ts
+- Adicionar logging detalhado para debug
+- Tratar diferentes formatos de auth (string JSON, objeto, URLSearchParams)
+- Adicionar try/catch específico para JSON.parse
+- Verificar se o corpo está vazio antes de tentar parsear
 ```
+
+**Mudanças específicas:**
+
+1. Adicionar log do corpo bruto recebido para debug
+2. Verificar se `req.body` está vazio antes de processar
+3. Usar try/catch ao fazer JSON.parse nos campos individuais
+4. Tratar o caso onde Bitrix envia dados diretamente como query params ou formato diferente
 
 ---
 
-## Arquivos a Criar/Modificar
+## Ação Imediata Necessária
 
-| Arquivo | Ação |
-|---------|------|
-| `index.html` | Adicionar script BX24 |
-| `src/contexts/BitrixContext.tsx` | Novo - gerenciar SDK BX24 |
-| `src/hooks/useBitrix.ts` | Novo - hook para usar contexto |
-| `src/types/bitrix24.d.ts` | Novo - tipagem TypeScript do BX24 |
-| `src/App.tsx` | Modificar - usar BitrixProvider |
-| `src/components/auth/AuthForm.tsx` | Remover ou adaptar para fallback |
-| `supabase/functions/bitrix24-install/` | Novo - handler de instalação |
-| `supabase/functions/bitrix24-webhook/` | Modificar - mais eventos |
+Antes de eu fazer as correções no código, você precisa:
 
----
-
-## Detalhes Técnicos
-
-### Tipagem do BX24 (TypeScript)
-
-```text
-interface BX24Auth {
-  access_token: string;
-  refresh_token: string;
-  domain: string;
-  member_id: string;
-  client_endpoint: string;
-}
-
-interface BX24 {
-  init(callback: () => void): void;
-  callMethod(method: string, params?: object, callback?: Function): void;
-  getAuth(): BX24Auth;
-  installFinish(): void;
-  isAdmin(): boolean;
-  getLang(): string;
-}
-```
-
-### Migração SQL
-
-```text
-ALTER TABLE bitrix24_credentials 
-ADD COLUMN member_id TEXT UNIQUE,
-ADD COLUMN client_endpoint TEXT;
-```
-
----
-
-## Requisitos para Publicação no Marketplace
-
-Após implementação, você precisará:
-
-1. **Registrar como desenvolvedor** no Bitrix24 Partner Portal
-2. **Criar aplicação** com as seguintes configurações:
-   - URL do app: URL publicada do Lovable
-   - Handler de instalação: URL da edge function `bitrix24-install`
-   - Escopos: `telephony`, `crm`, `user`
-3. **Submeter para aprovação** do Bitrix24
+1. **Publicar o app** clicando em "Publish" no canto superior direito
+2. Aguardar a publicação completar
+3. Me avisar quando estiver publicado para eu corrigir a edge function
 
