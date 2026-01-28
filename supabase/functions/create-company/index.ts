@@ -20,37 +20,55 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
     if (!supabaseUrl || !supabaseServiceKey) {
+      console.error("[create-company] Missing Supabase credentials");
       throw new Error("Missing Supabase credentials");
     }
 
-    // Get the user from the authorization header
+    // Get the authorization header
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    
+    console.log("[create-company] Auth header present:", !!authHeader);
+    console.log("[create-company] Auth header length:", authHeader?.length || 0);
+    
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      console.error("[create-company] No valid authorization header");
       return new Response(
         JSON.stringify({ error: "No authorization header" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Create client with user's token to get their info
-    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey);
-    
-    // Verify the user token
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(token);
+    console.log("[create-company] Token length:", token.length);
 
-    if (userError || !user) {
-      console.error("User verification failed:", userError);
+    // Create admin client with SERVICE ROLE for all operations
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Validate the token using getUser
+    const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
+
+    if (userError) {
+      console.error("[create-company] getUser error:", userError.message);
       return new Response(
-        JSON.stringify({ error: "User not authenticated", details: userError?.message }),
+        JSON.stringify({ error: "User not authenticated", details: userError.message }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("User verified:", user.id);
+    if (!userData?.user?.id) {
+      console.error("[create-company] No user in response");
+      return new Response(
+        JSON.stringify({ error: "User not authenticated", details: "No user found" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
+    const userId = userData.user.id;
+    console.log("[create-company] User verified:", userId);
+
+    // Parse request body
     const body: CreateCompanyRequest = await req.json();
-    console.log("Creating company:", body.name);
+    console.log("[create-company] Creating company:", body.name);
 
     if (!body.name || body.name.trim().length < 2) {
       return new Response(
@@ -60,42 +78,42 @@ Deno.serve(async (req) => {
     }
 
     // Create the company using service role (bypasses RLS)
-    const { data: company, error: companyError } = await supabaseClient
+    const { data: company, error: companyError } = await supabaseAdmin
       .from("companies")
       .insert({ name: body.name.trim() })
       .select()
       .single();
 
     if (companyError) {
-      console.error("Error creating company:", companyError);
+      console.error("[create-company] Error creating company:", companyError);
       return new Response(
         JSON.stringify({ error: "Failed to create company", details: companyError.message }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("Company created:", company.id);
+    console.log("[create-company] Company created:", company.id);
 
     // Add user as admin member
-    const { error: memberError } = await supabaseClient
+    const { error: memberError } = await supabaseAdmin
       .from("company_members")
       .insert({
         company_id: company.id,
-        user_id: user.id,
+        user_id: userId,
         role: "admin",
       });
 
     if (memberError) {
-      console.error("Error adding member:", memberError);
+      console.error("[create-company] Error adding member:", memberError);
       // Rollback: delete the company if member creation fails
-      await supabaseClient.from("companies").delete().eq("id", company.id);
+      await supabaseAdmin.from("companies").delete().eq("id", company.id);
       return new Response(
         JSON.stringify({ error: "Failed to add member", details: memberError.message }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("Member added successfully");
+    console.log("[create-company] Member added successfully for user:", userId);
 
     return new Response(
       JSON.stringify({ 
@@ -105,7 +123,7 @@ Deno.serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: unknown) {
-    console.error("Error:", error);
+    console.error("[create-company] Error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";
     return new Response(
       JSON.stringify({ error: message }),

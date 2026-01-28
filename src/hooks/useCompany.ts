@@ -1,6 +1,40 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
-import type { Company, CompanyMember } from '@/types/api4com';
+import type { Company } from '@/types/api4com';
+
+// Helper to ensure session exists before critical operations
+async function ensureSessionForOperation(): Promise<string> {
+  console.log('[useCompany] Ensuring session for operation...');
+  
+  // First attempt: check existing session
+  const { data: { session } } = await supabase.auth.getSession();
+  
+  if (session?.access_token) {
+    console.log('[useCompany] Session found:', session.user.id);
+    return session.access_token;
+  }
+  
+  console.log('[useCompany] No session, attempting anonymous sign-in...');
+  
+  // Second attempt: sign in anonymously
+  const { data, error } = await supabase.auth.signInAnonymously();
+  
+  if (error) {
+    console.error('[useCompany] Anonymous sign-in failed:', error);
+    throw new Error(
+      'Não foi possível estabelecer uma sessão. ' +
+      'Isso pode acontecer em ambientes de iframe com cookies de terceiros bloqueados. ' +
+      'Tente recarregar a página ou abrir em uma nova aba.'
+    );
+  }
+  
+  if (!data.session?.access_token) {
+    throw new Error('Sessão criada mas sem token de acesso');
+  }
+  
+  console.log('[useCompany] Anonymous session created:', data.user?.id);
+  return data.session.access_token;
+}
 
 export function useCompany() {
   const queryClient = useQueryClient();
@@ -45,30 +79,28 @@ export function useCompany() {
 
   const createCompany = useMutation({
     mutationFn: async (name: string) => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('User not authenticated');
+      // Ensure we have a valid session with retry logic
+      await ensureSessionForOperation();
 
-      // Use edge function to create company (bypasses RLS issues)
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-company`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          },
-          body: JSON.stringify({ name }),
-        }
-      );
+      console.log('[useCompany] Calling create-company function...');
+      
+      // Use supabase.functions.invoke instead of fetch for better iframe compatibility
+      const { data, error } = await supabase.functions.invoke('create-company', {
+        body: { name },
+      });
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to create company');
+      if (error) {
+        console.error('[useCompany] Edge function error:', error);
+        throw new Error(error.message || 'Falha ao criar empresa');
       }
 
-      return result.company as Company;
+      if (!data?.success) {
+        console.error('[useCompany] Function returned error:', data?.error);
+        throw new Error(data?.error || 'Falha ao criar empresa');
+      }
+
+      console.log('[useCompany] Company created successfully:', data.company?.id);
+      return data.company as Company;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['companies'] });
