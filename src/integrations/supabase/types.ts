@@ -49,33 +49,39 @@ export type Database = {
       bitrix24_credentials: {
         Row: {
           access_token: string
+          client_endpoint: string | null
           company_id: string
           created_at: string
           domain: string
           expires_at: string | null
           id: string
+          member_id: string | null
           refresh_token: string | null
           updated_at: string
           webhook_url: string | null
         }
         Insert: {
           access_token: string
+          client_endpoint?: string | null
           company_id: string
           created_at?: string
           domain: string
           expires_at?: string | null
           id?: string
+          member_id?: string | null
           refresh_token?: string | null
           updated_at?: string
           webhook_url?: string | null
         }
         Update: {
           access_token?: string
+          client_endpoint?: string | null
           company_id?: string
           created_at?: string
           domain?: string
           expires_at?: string | null
           id?: string
+          member_id?: string | null
           refresh_token?: string | null
           updated_at?: string
           webhook_url?: string | null
@@ -168,18 +174,21 @@ export type Database = {
       }
       companies: {
         Row: {
+          bitrix_member_id: string | null
           created_at: string
           id: string
           name: string
           updated_at: string
         }
         Insert: {
+          bitrix_member_id?: string | null
           created_at?: string
           id?: string
           name: string
           updated_at?: string
         }
         Update: {
+          bitrix_member_id?: string | null
           created_at?: string
           id?: string
           name?: string
