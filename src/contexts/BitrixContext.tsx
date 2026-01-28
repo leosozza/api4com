@@ -10,6 +10,7 @@ interface BitrixContextState {
   auth: BX24Auth | null;
   currentUser: BX24UserInfo | null;
   companyId: string | null;
+  linkedCompany: { id: string; name: string; role: string } | null;
   isAdmin: boolean;
   error: string | null;
   supabaseUser: User | null;
@@ -43,6 +44,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
     auth: null,
     currentUser: null,
     companyId: null,
+    linkedCompany: null,
     isAdmin: false,
     error: null,
     supabaseUser: null,
@@ -105,30 +107,33 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
     }
   }, [getBX24]);
 
-  // Find or create company based on Bitrix member_id
-  const findOrCreateCompany = useCallback(async (auth: BX24Auth): Promise<string | null> => {
+  // Link user to company based on Bitrix member_id via edge function
+  const linkUserToCompany = useCallback(async (memberId: string): Promise<{ id: string; name: string; role: string } | null> => {
     try {
-      // First, try to find existing company by member_id
-      const { data: existingCompany, error: findError } = await supabase
-        .from('companies')
-        .select('id')
-        .eq('bitrix_member_id', auth.member_id)
-        .maybeSingle();
+      console.log('[BitrixContext] Linking user to company with member_id:', memberId);
+      
+      const { data, error } = await supabase.functions.invoke('link-user-to-company', {
+        body: { member_id: memberId },
+      });
 
-      if (findError) {
-        console.error('Error finding company:', findError);
+      if (error) {
+        console.error('[BitrixContext] Error linking user to company:', error);
         return null;
       }
 
-      if (existingCompany) {
-        return existingCompany.id;
+      if (!data?.success) {
+        console.log('[BitrixContext] Link failed:', data?.error, data?.code);
+        return null;
       }
 
-      // Company doesn't exist - it will be created during installation
-      // For now, return null and the app will show setup wizard
-      return null;
+      console.log('[BitrixContext] User linked to company:', data.company?.id, 'role:', data.role);
+      return {
+        id: data.company.id,
+        name: data.company.name,
+        role: data.role,
+      };
     } catch (error) {
-      console.error('Error in findOrCreateCompany:', error);
+      console.error('[BitrixContext] Error in linkUserToCompany:', error);
       return null;
     }
   }, []);
@@ -222,13 +227,19 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
         return;
       }
 
-      // Fetch current user and company
+      // Fetch current user
       let currentUser: BX24UserInfo | null = null;
+      let linkedCompany: { id: string; name: string; role: string } | null = null;
       let companyId: string | null = null;
 
       try {
         currentUser = await callMethod<BX24UserInfo>('user.current');
-        companyId = await findOrCreateCompany(auth);
+        
+        // Link user to company using member_id
+        if (auth.member_id) {
+          linkedCompany = await linkUserToCompany(auth.member_id);
+          companyId = linkedCompany?.id ?? null;
+        }
       } catch (error) {
         console.error('[BitrixContext] Error during initialization:', error);
       }
@@ -240,6 +251,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
         auth,
         currentUser,
         companyId,
+        linkedCompany,
         isAdmin,
         error: null,
         supabaseUser,
@@ -248,7 +260,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
       // Fit window to content
       bx24.fitWindow();
     });
-  }, [getBX24, callMethod, findOrCreateCompany]);
+  }, [getBX24, callMethod, linkUserToCompany]);
 
   // Initialize with progressive retries for BX24 detection
   useEffect(() => {

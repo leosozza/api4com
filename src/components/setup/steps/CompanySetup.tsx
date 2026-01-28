@@ -18,20 +18,24 @@ const companySchema = z.object({
 type CompanyFormData = z.infer<typeof companySchema>;
 
 interface CompanySetupProps {
+  linkedCompany?: { id: string; name: string; role?: string } | null;
   onComplete: () => void;
 }
 
-export function CompanySetup({ onComplete }: CompanySetupProps) {
+export function CompanySetup({ linkedCompany, onComplete }: CompanySetupProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const { currentCompany, createCompany } = useCompany();
   const { session, ensureSession } = useAuth();
   const [sessionReady, setSessionReady] = useState(!!session);
 
+  // Use linked company from Bitrix if available
+  const effectiveCompany = currentCompany || linkedCompany;
+
   const form = useForm<CompanyFormData>({
     resolver: zodResolver(companySchema),
     defaultValues: {
-      name: currentCompany?.name || '',
+      name: effectiveCompany?.name || '',
     },
   });
 
@@ -80,7 +84,7 @@ export function CompanySetup({ onComplete }: CompanySetupProps) {
   };
 
   const onSubmit = async (data: CompanyFormData) => {
-    if (currentCompany) {
+    if (effectiveCompany) {
       onComplete();
       return;
     }
@@ -112,14 +116,16 @@ export function CompanySetup({ onComplete }: CompanySetupProps) {
     }
   };
 
-  if (currentCompany) {
+  if (effectiveCompany) {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 rounded-lg border bg-muted/50 p-4">
           <Building2 className="h-8 w-8 text-primary" />
           <div>
-            <p className="font-medium">{currentCompany.name}</p>
-            <p className="text-sm text-muted-foreground">Empresa configurada</p>
+            <p className="font-medium">{effectiveCompany.name}</p>
+            <p className="text-sm text-muted-foreground">
+              {linkedCompany ? 'Empresa vinculada automaticamente' : 'Empresa configurada'}
+            </p>
           </div>
         </div>
         <Button onClick={onComplete}>Continuar</Button>

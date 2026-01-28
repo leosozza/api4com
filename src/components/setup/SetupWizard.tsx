@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Check, Building2, Key, Users, Phone, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import { useCompany } from '@/hooks/useCompany';
 import { useCredentials } from '@/hooks/useCredentials';
 import { useUserMappings } from '@/hooks/useUserMappings';
 import { usePhoneLines } from '@/hooks/usePhoneLines';
+import { useBitrix } from '@/hooks/useBitrix';
 
 const steps = [
   { id: 'company', title: 'Empresa', description: 'Configure sua empresa', icon: Building2 },
@@ -20,14 +21,23 @@ const steps = [
 ];
 
 export function SetupWizard() {
+  const { linkedCompany, isInBitrix } = useBitrix();
   const [currentStep, setCurrentStep] = useState(0);
-  const { currentCompany } = useCompany();
-  const { api4comCredentials, bitrix24Credentials } = useCredentials(currentCompany?.id);
-  const { userMappings } = useUserMappings(currentCompany?.id);
-  const { phoneLines } = usePhoneLines(currentCompany?.id);
+  const { currentCompany } = useCompany(linkedCompany?.id);
+  const { api4comCredentials, bitrix24Credentials } = useCredentials(currentCompany?.id || linkedCompany?.id);
+  const { userMappings } = useUserMappings(currentCompany?.id || linkedCompany?.id);
+  const { phoneLines } = usePhoneLines(currentCompany?.id || linkedCompany?.id);
+
+  // Auto-skip company step if linked via Bitrix
+  useEffect(() => {
+    if (isInBitrix && linkedCompany && currentStep === 0) {
+      console.log('[SetupWizard] Company already linked via Bitrix, skipping to step 1');
+      setCurrentStep(1);
+    }
+  }, [isInBitrix, linkedCompany, currentStep]);
 
   const getStepStatus = (index: number) => {
-    if (index === 0) return !!currentCompany;
+    if (index === 0) return !!currentCompany || !!linkedCompany;
     if (index === 1) return !!api4comCredentials && !!bitrix24Credentials;
     if (index === 2) return userMappings.length > 0;
     if (index === 3) return phoneLines.length > 0;
@@ -36,10 +46,12 @@ export function SetupWizard() {
 
   const isSetupComplete = steps.every((_, index) => getStepStatus(index));
 
+  const effectiveCompany = currentCompany || linkedCompany;
+
   const renderStepContent = () => {
     switch (currentStep) {
       case 0:
-        return <CompanySetup onComplete={() => setCurrentStep(1)} />;
+        return <CompanySetup linkedCompany={effectiveCompany} onComplete={() => setCurrentStep(1)} />;
       case 1:
         return <CredentialsSetup onComplete={() => setCurrentStep(2)} />;
       case 2:

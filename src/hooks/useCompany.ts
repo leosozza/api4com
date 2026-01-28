@@ -36,7 +36,7 @@ async function ensureSessionForOperation(): Promise<string> {
   return data.session.access_token;
 }
 
-export function useCompany() {
+export function useCompany(bitrixMemberId?: string | null) {
   const queryClient = useQueryClient();
 
   const { data: companies, isLoading: isLoadingCompanies } = useQuery({
@@ -53,27 +53,34 @@ export function useCompany() {
   });
 
   const { data: currentCompany, isLoading: isLoadingCurrentCompany } = useQuery({
-    queryKey: ['current-company'],
+    queryKey: ['current-company', bitrixMemberId],
     queryFn: async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
 
+      // First, try to find by company_members (user is already linked)
       const { data: membership } = await supabase
         .from('company_members')
         .select('company_id, role')
         .eq('user_id', user.id)
         .maybeSingle();
 
-      if (!membership) return null;
+      if (membership) {
+        const { data: company, error } = await supabase
+          .from('companies')
+          .select('*')
+          .eq('id', membership.company_id)
+          .maybeSingle();
 
-      const { data: company, error } = await supabase
-        .from('companies')
-        .select('*')
-        .eq('id', membership.company_id)
-        .maybeSingle();
+        if (error) throw error;
+        if (company) {
+          return { ...company, role: membership.role } as Company & { role: string };
+        }
+      }
 
-      if (error) throw error;
-      return company ? { ...company, role: membership.role } as Company & { role: string } : null;
+      // If no membership but we have bitrix_member_id, company exists but user not yet linked
+      // This shouldn't happen after the link-user-to-company call, but handle gracefully
+      return null;
     },
   });
 

@@ -112,6 +112,7 @@ export function useBitrix() {
     auth: context.auth,
     currentUser: context.currentUser,
     companyId: context.companyId,
+    linkedCompany: context.linkedCompany,
     isAdmin: context.isAdmin,
     error: context.error,
 
