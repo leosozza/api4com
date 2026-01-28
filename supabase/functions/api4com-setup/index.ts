@@ -44,9 +44,9 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // First, validate the Api4Com token by getting account info
-    console.log("Validating Api4Com token...");
-    const accountResponse = await fetch("https://api.api4com.com/api/v1/account", {
+    // Validate the Api4Com token by checking integrations endpoint
+    console.log("Validating Api4Com token via integrations endpoint...");
+    const validationResponse = await fetch("https://api.api4com.com/api/v1/integrations", {
       method: "GET",
       headers: {
         "Authorization": body.api_token,
@@ -54,24 +54,23 @@ Deno.serve(async (req) => {
       },
     });
 
-    if (!accountResponse.ok) {
-      const errorText = await accountResponse.text();
-      console.error("Api4Com account validation failed:", errorText);
+    if (!validationResponse.ok) {
+      const errorText = await validationResponse.text();
+      console.error("Api4Com token validation failed:", errorText);
       return new Response(
         JSON.stringify({ 
-          error: "Token Api4Com inválido", 
+          error: "Token Api4Com inválido. Verifique se o token está correto.", 
           details: errorText 
         }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const accountData = await accountResponse.json();
-    console.log("Api4Com account data:", JSON.stringify(accountData));
+    const validationData = await validationResponse.json();
+    console.log("Api4Com token valid, current integrations:", JSON.stringify(validationData));
 
-    // Extract domain from account data
-    const api4comDomain = accountData.domain || accountData.company?.domain || null;
-    console.log("Api4Com domain:", api4comDomain);
+    // Domain will be set from the integration response or null
+    let api4comDomain: string | null = null;
 
     // Configure webhook on Api4Com
     const webhookUrl = `${supabaseUrl}/functions/v1/api4com-webhook`;
