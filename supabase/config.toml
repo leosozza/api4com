@@ -17,3 +17,6 @@ verify_jwt = false
 
 [functions.create-company]
 verify_jwt = false
+
+[functions.link-user-to-company]
+verify_jwt = false

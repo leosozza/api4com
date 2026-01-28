@@ -4,6 +4,7 @@ import { Phone, Settings, BarChart3, History, RefreshCw, Building2, Loader2 } fr
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
 import { useCompany } from '@/hooks/useCompany';
+import { useBitrix } from '@/hooks/useBitrix';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from '@/hooks/use-toast';
@@ -22,7 +23,11 @@ export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
   const { user, resetSession } = useAuth();
   const { currentCompany } = useCompany();
+  const { isInBitrix, linkedCompany } = useBitrix();
   const [isResetting, setIsResetting] = useState(false);
+
+  // Use linked company from Bitrix if available
+  const effectiveCompany = currentCompany || linkedCompany;
 
   const handleResetSession = async () => {
     setIsResetting(true);
@@ -55,10 +60,10 @@ export function AppLayout({ children }: AppLayoutProps) {
             </div>
             <div>
               <h1 className="text-lg font-semibold">Api4Com Connector</h1>
-              {currentCompany && (
+              {effectiveCompany && (
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Building2 className="h-3 w-3" />
-                  {currentCompany.name}
+                  {effectiveCompany.name}
                 </div>
               )}
             </div>
@@ -68,25 +73,28 @@ export function AppLayout({ children }: AppLayoutProps) {
             <span className="hidden text-sm text-muted-foreground sm:inline">
               {user?.email || (user?.is_anonymous ? 'Sessão anônima' : '')}
             </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  onClick={handleResetSession}
-                  disabled={isResetting}
-                >
-                  {isResetting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Resetar sessão</p>
-              </TooltipContent>
-            </Tooltip>
+            {/* Only show reset button when NOT inside Bitrix (dev mode) */}
+            {!isInBitrix && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={handleResetSession}
+                    disabled={isResetting}
+                  >
+                    {isResetting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Resetar sessão</p>
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </div>
       </header>
