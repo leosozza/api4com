@@ -1,91 +1,270 @@
 
-# Correção do Carregamento Infinito no Bitrix24
+# Plano de Integração Completa com WebPhone Api4Com
 
-## Problema Identificado
+## Resumo Executivo
 
-O redirecionamento via `window.location.href` na edge function de instalação está quebrando o contexto do SDK BX24. Quando isso acontece:
+Este plano implementa a integração completa entre o WebPhone da Api4Com e o Bitrix24, incluindo:
+- **Click-to-Call**: Iniciar chamadas direto do CRM Bitrix24
+- **Configuração Automática de Webhooks**: Registrar webhook na Api4Com automaticamente
+- **Recebimento de Eventos v1.4**: Processar eventos de chamada no formato correto da Api4Com
 
-1. Bitrix24 carrega a URL do instalador no iframe
-2. O instalador processa e retorna HTML com redirect
-3. O redirect acontece, mas o contexto de comunicação BX24 é perdido
-4. O SDK no app tenta `bx24.init()` mas o callback nunca é chamado
-5. O app fica travado no estado de "Carregando..." esperando a inicialização
+## Análise do Estado Atual
 
-## Solução
+### O que já existe:
+- Tabelas de banco de dados: `api4com_credentials`, `user_mappings`, `call_logs`, `bitrix24_credentials`
+- Edge function `bitrix24-webhook` com lógica de Click-to-Call (parcialmente implementada)
+- Edge function `api4com-webhook` com formato de eventos **incorreto**
+- Setup Wizard para configurar credenciais
 
-Modificar o fluxo pós-instalação para não fazer redirect automático. Em vez disso:
+### Problemas Identificados:
+1. **Formato de webhook incompatível**: O código atual espera campos como `event`, `call_id`, `extension`, mas a Api4Com v1.4 envia `eventType`, `caller`, `called`, `recordUrl`
+2. **Click-to-Call não implementado**: A função `originateCall()` está como placeholder
+3. **Webhook não configurado automaticamente**: O usuário precisa configurar manualmente na Api4Com
 
-1. **Mostrar mensagem de sucesso** com instruções para o usuário
-2. **Usar a API do BX24** para fechar o instalador e abrir o app corretamente
-3. **Alternativa**: Fornecer um botão para o usuário clicar e abrir o app manualmente
+---
 
-## Arquivos a Modificar
+## Fase 1: Atualizar Webhook Api4Com para formato v1.4
 
-### 1. `supabase/functions/bitrix24-install/index.ts`
+### Arquivo: `supabase/functions/api4com-webhook/index.ts`
 
-Alterar o HTML de resposta para:
-
-- Remover o `setTimeout` com `window.location.href`
-- Usar `BX24.installFinish()` para sinalizar ao Bitrix24 que a instalação foi concluída
-- Adicionar botão manual para abrir o app caso o fechamento automático não funcione
-
-```javascript
-// Ao invés de:
-setTimeout(function() {
-  window.location.href = "${appUrl}";
-}, 1500);
-
-// Usar:
-BX24.init(function() {
-  // Sinaliza que a instalação foi concluída
-  BX24.installFinish();
-});
-```
-
-### 2. Detalhes Técnicos da Implementação
-
-O HTML retornado pelo instalador será:
-
-```html
-<script src="https://api.bitrix24.com/api/v1/"></script>
-<script>
-  BX24.init(function() {
-    // Mostra mensagem de sucesso por 2 segundos
-    setTimeout(function() {
-      // Sinaliza conclusão da instalação
-      BX24.installFinish();
-    }, 2000);
-  });
-</script>
-```
-
-O método `BX24.installFinish()` é a forma correta de finalizar uma instalação no Bitrix24. Ele:
-- Fecha o iframe do instalador
-- Permite que o Bitrix24 navegue para a URL do aplicativo corretamente
-- Mantém o contexto do SDK intacto
-
-### 3. Fallback Manual
-
-Caso o `BX24.installFinish()` não funcione em alguns portais, adicionar:
-
-- Botão "Abrir Aplicativo" que aparece após alguns segundos
-- Instruções visuais para o usuário
-
-## Fluxo Corrigido
+Reescrever completamente para processar o formato correto:
 
 ```text
-1. Usuário instala o app no Marketplace
-2. Bitrix24 chama a URL do instalador
-3. Edge function processa e salva credenciais
-4. Retorna HTML com BX24.installFinish()
-5. Bitrix24 fecha o instalador automaticamente
-6. Usuário abre o app normalmente pelo menu
-7. App carrega com SDK BX24 funcionando corretamente
+Formato v1.4 da Api4Com:
+{
+  "version": "v1.4",
+  "eventType": "channel-hangup",
+  "id": "uuid-da-chamada",
+  "domain": "empresa.api4com.com",
+  "direction": "outbound" | "inbound",
+  "caller": "1000",           // ramal
+  "called": "04833328530",    // numero discado
+  "startedAt": "2025-01-01 00:00:00",
+  "answeredAt": "2025-01-01 00:00:05",
+  "endedAt": "2025-01-01 00:00:10",
+  "duration": 5,
+  "hangupCause": "NORMAL_CLEARING",
+  "hangupCauseCode": "16",
+  "recordUrl": "https://...",
+  "metadata": { ... }
+}
 ```
 
-## Benefícios
+**Alteracoes necessarias:**
+- Criar nova interface `Api4ComWebhookV14` com campos corretos
+- Identificar empresa pelo campo `domain` ou `metadata.gateway`
+- Mapear `caller` (ramal) para encontrar o `user_mapping`
+- Mapear `called` para o `phone_number`
+- Usar `eventType: "channel-hangup"` como evento principal
+- Extrair `recordUrl` para gravacao
+- Calcular status baseado em `hangupCause`
 
-- Mantém o contexto do SDK BX24 intacto
-- Segue o padrão oficial do Bitrix24 para instalação de apps
-- Funciona consistentemente em todos os portais Bitrix24
-- Fallback manual garante que usuário nunca fica travado
+---
+
+## Fase 2: Implementar Click-to-Call via Api4Com API
+
+### Arquivo: `supabase/functions/bitrix24-webhook/index.ts`
+
+Implementar a funcao `originateCall()` corretamente:
+
+```text
+Endpoint Api4Com: POST https://api.api4com.com/api/v1/dialer
+Headers: Authorization: <token>
+Body: {
+  "extension": "1000",
+  "phone": "+554833328530",
+  "metadata": {
+    "gateway": "bitrix24-integration",
+    "bitrixUserId": "123",
+    "companyId": "uuid"
+  }
+}
+```
+
+**Alteracoes necessarias:**
+- Implementar chamada real para `https://api.api4com.com/api/v1/dialer`
+- Enviar metadata com identificadores para rastreamento
+- Tratar erros e retornar resposta adequada ao Bitrix24
+
+---
+
+## Fase 3: Configuracao Automatica de Webhook
+
+### Nova Edge Function: `supabase/functions/api4com-setup/index.ts`
+
+Criar funcao para configurar webhook automaticamente quando usuario salvar token:
+
+```text
+Endpoint Api4Com: PATCH https://api.api4com.com/api/v1/integrations
+Headers: Authorization: <token>
+Body: {
+  "gateway": "bitrix24-connector",
+  "webhook": true,
+  "webhookConstraint": {
+    "metadata": {
+      "gateway": "bitrix24-connector"
+    }
+  },
+  "metadata": {
+    "webhookUrl": "https://xdyumezeouultnxssnlc.supabase.co/functions/v1/api4com-webhook",
+    "webhookVersion": "v1.4",
+    "webhookTypes": ["channel-hangup"]
+  }
+}
+```
+
+### Atualizar: `src/components/setup/steps/CredentialsSetup.tsx`
+
+- Ao salvar token Api4Com, chamar edge function `api4com-setup`
+- Mostrar status de configuracao do webhook
+- Exibir erros se a configuracao falhar
+
+---
+
+## Fase 4: Atualizar Banco de Dados
+
+### Nova coluna na tabela `api4com_credentials`:
+
+```sql
+ALTER TABLE api4com_credentials 
+ADD COLUMN api4com_domain text,
+ADD COLUMN webhook_configured boolean DEFAULT false;
+```
+
+Armazenar o dominio da Api4Com para identificar a empresa nos webhooks.
+
+---
+
+## Fase 5: Melhorar Processamento de Chamadas
+
+### Atualizar: `supabase/functions/api4com-webhook/index.ts`
+
+Logica de processamento:
+
+1. Receber evento `channel-hangup`
+2. Identificar empresa por `domain` ou `metadata.gateway`
+3. Encontrar mapeamento de usuario pelo `caller` (ramal)
+4. Determinar direcao da chamada (`direction`)
+5. Calcular status final baseado em:
+   - `answeredAt` existe -> chamada atendida
+   - `duration > 0` -> chamada completada
+   - `hangupCause` = "NO_ANSWER" -> chamada perdida
+6. Criar/atualizar registro em `call_logs`
+7. Notificar Bitrix24 via `telephony.externalcall.finish`
+
+---
+
+## Diagrama de Fluxo
+
+```text
++----------------+     +----------------+     +------------------+
+|   Bitrix24     |     |    Lovable     |     |    Api4Com       |
+|    CRM         |     |    Backend     |     |    WebPhone      |
++----------------+     +----------------+     +------------------+
+        |                      |                       |
+        |  1. Click-to-Call    |                       |
+        |--------------------->|                       |
+        |                      |  2. POST /dialer      |
+        |                      |---------------------->|
+        |                      |                       |
+        |                      |  3. Chamada iniciada  |
+        |                      |<----------------------|
+        |                      |                       |
+        |                      |  4. webhook hangup    |
+        |                      |<----------------------|
+        |                      |                       |
+        |  5. externalcall.    |                       |
+        |     finish           |                       |
+        |<---------------------|                       |
+        |                      |                       |
+```
+
+---
+
+## Arquivos a Criar/Modificar
+
+| Arquivo | Acao | Descricao |
+|---------|------|-----------|
+| `supabase/functions/api4com-webhook/index.ts` | Reescrever | Formato v1.4 |
+| `supabase/functions/bitrix24-webhook/index.ts` | Modificar | Click-to-Call real |
+| `supabase/functions/api4com-setup/index.ts` | Criar | Config automatica webhook |
+| `src/components/setup/steps/CredentialsSetup.tsx` | Modificar | Chamar setup automatico |
+| `src/types/api4com.ts` | Modificar | Novos tipos v1.4 |
+| `supabase/config.toml` | Modificar | Adicionar nova funcao |
+| Migracao SQL | Criar | Novas colunas |
+
+---
+
+## Detalhes Tecnicos
+
+### Interface do Webhook v1.4
+
+```typescript
+interface Api4ComWebhookV14 {
+  version: "v1.4";
+  eventType: "channel-hangup";
+  id: string;
+  domain: string;
+  direction: "inbound" | "outbound";
+  caller: string;
+  called: string;
+  startedAt: string;
+  answeredAt?: string;
+  endedAt: string;
+  duration: number;
+  hangupCause: string;
+  hangupCauseCode: string;
+  recordUrl?: string;
+  metadata?: {
+    gateway?: string;
+    bitrixUserId?: string;
+    companyId?: string;
+    [key: string]: unknown;
+  };
+}
+```
+
+### Mapeamento de Status
+
+```typescript
+const getCallStatus = (event: Api4ComWebhookV14): string => {
+  if (!event.answeredAt) return "missed";
+  if (event.duration > 0) return "completed";
+  if (event.hangupCause === "USER_BUSY") return "busy";
+  if (event.hangupCause === "NO_ANSWER") return "missed";
+  return "completed";
+};
+```
+
+### Configuracao do supabase/config.toml
+
+```toml
+[functions.api4com-setup]
+verify_jwt = false
+```
+
+---
+
+## Ordem de Implementacao
+
+1. **Migracao SQL** - Adicionar colunas necessarias
+2. **api4com-webhook** - Reescrever para formato v1.4
+3. **api4com-setup** - Criar funcao de configuracao automatica
+4. **bitrix24-webhook** - Implementar Click-to-Call real
+5. **CredentialsSetup.tsx** - Integrar configuracao automatica
+6. **Tipos TypeScript** - Atualizar interfaces
+
+---
+
+## Resultado Final
+
+Apos a implementacao:
+
+1. Usuario instala app no Bitrix24
+2. No Setup Wizard, insere token da Api4Com
+3. Sistema configura webhook automaticamente na Api4Com
+4. Click-to-Call funciona do Bitrix24 para o WebPhone
+5. Eventos de chamada sao recebidos no formato v1.4
+6. Chamadas sao registradas no Bitrix24 com gravacoes
+7. Dashboard mostra metricas em tempo real
+
