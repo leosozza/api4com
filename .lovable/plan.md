@@ -1,89 +1,154 @@
 
-Objetivo
-- Fazer a criação de empresa funcionar de forma consistente dentro do Bitrix24, mesmo após clicar em “sair”, eliminando o erro “User not authenticated”.
-- Tornar o app resiliente a atrasos na carga do SDK do Bitrix24 (BX24) e a condições comuns de iframe (rede mais lenta / storage restrito).
 
-Diagnóstico (o que está acontecendo hoje)
-- Você está “dentro do Bitrix24”, mas o app mostra “Modo desenvolvimento” porque o `window.BX24` não está disponível a tempo e o código faz fallback após ~3s. Se o SDK carregar depois disso, o app não tenta inicializar de novo.
-- Você clicou em “sair” (logout). O app desloga a sessão do backend e não garante automaticamente uma nova sessão (anônima) antes de permitir ações.
-- A criação de empresa depende de uma sessão válida (`supabase.auth.getSession()`), então quando a sessão está ausente (após logout, ou ainda não reestabelecida no iframe), o fluxo quebra e aparece “User not authenticated”.
-- Além disso, hoje o frontend chama a função `create-company` via `fetch`. Em iframe, é melhor chamar via `supabase.functions.invoke` para padronizar headers/auth e reduzir problemas de CORS/intermediários.
+## Objetivo
+Eliminar a necessidade de criar empresa manualmente dentro do Bitrix24. Quando o app for aberto dentro do Bitrix:
+1. Detectar o `member_id` do portal
+2. Encontrar ou vincular automaticamente o usuário anônimo à empresa correspondente
+3. Pular o passo "Criar Empresa" no wizard
 
-Plano de implementação (passos)
-1) Tornar o “logout” seguro (reset de sessão)
-   - Ajustar o comportamento do botão de sair no topo:
-     - Em vez de apenas `signOut()`, implementar um “Resetar sessão”:
-       1) faz signOut
-       2) em seguida recria sessão anônima automaticamente (sign-in anônimo)
-     - Resultado: o usuário nunca fica “sem sessão” ao clicar em sair, evitando o “User not authenticated”.
-   - (Opcional/UX) Renomear o ícone/tooltip para deixar claro que é “Resetar sessão” em vez de “Sair”, já que aqui não existe login tradicional.
+## Diagnóstico do Problema
 
-2) Reforçar a garantia de sessão antes de ações críticas (especialmente criar empresa)
-   - No `useCompany().createCompany`:
-     - Se `getSession()` vier vazio, tentar `signInAnonymously()` e depois chamar `getSession()` novamente (com retry curto).
-     - Se ainda assim não tiver sessão, mostrar um erro amigável explicando que o Bitrix/iframe bloqueou a sessão e sugerindo recarregar/abrir em outra aba.
-   - No `CompanySetup` (UI):
-     - Desabilitar o botão “Criar Empresa” enquanto a sessão não estiver pronta.
-     - Exibir um aviso pequeno “Reconectando…” e um botão “Reconectar” (que força o sign-in anônimo) se detectar ausência de sessão.
-   - Isso elimina o cenário em que o usuário clica rápido e a sessão ainda não foi reestabelecida.
+### Estado atual do banco de dados
+- **Empresa via instalação**: `Portal thoth24.bitrix24.com.br` (criada pelo `bitrix24-install`)
+  - `bitrix_member_id`: `2b292197955c1c2fc0f5561388afc284`
+  - **Problema**: Não tem nenhum membro (`company_members`) vinculado
+- **Empresa via formulário**: `Empresa Teste Bitrix` (criada manualmente)
+  - Tem membro com `user_id` anônimo
+  - **Problema**: Não tem `bitrix_member_id`
 
-3) Trocar a chamada da função backend de `fetch` para `supabase.functions.invoke`
-   - Em `useCompany`:
-     - Substituir o `fetch(`${VITE_SUPABASE_URL}/functions/v1/create-company`, ...)` por:
-       - `supabase.functions.invoke('create-company', { body: { name } })`
-     - Benefícios:
-       - O SDK injeta headers corretos
-       - Menos risco de CORS/preflight inconsistente em iframe
-       - Código mais curto e mais padrão para o projeto
+### Por que a criação manual falha
+O usuário atual no iframe do Bitrix tem um `user_id` diferente a cada sessão anônima. A edge function `create-company` cria uma empresa sem `bitrix_member_id`, então:
+- Na próxima sessão (novo `user_id` anônimo), não encontra o `company_member` antigo
+- O app mostra o wizard pedindo para criar empresa novamente
 
-4) Deixar o backend `create-company` mais robusto para autenticação moderna
-   - Atualizar a função `create-company` para validar o token usando o método recomendado:
-     - `auth.getClaims(token)` (com client inicializado com ANON KEY + Authorization global)
-   - Manter um client separado com SERVICE ROLE apenas para inserts (companies/company_members).
-   - Melhorar logs (sem expor token):
-     - Logar se veio Authorization, tamanho do token, e mensagens de erro do `getClaims`.
-   - Resultado: reduz falsos negativos de “User not authenticated” quando o token/assinatura usa signing-keys.
+### Solução
+Usar o `auth.member_id` do Bitrix como identificador principal do tenant:
+1. Quando o app inicializa dentro do Bitrix, obtém o `member_id`
+2. Busca empresa pelo `bitrix_member_id` (não pelo `user_id`)
+3. Se encontrar, vincula o usuário anônimo atual como membro
+4. Se não encontrar, cria empresa automaticamente (instalação já faz isso)
 
-5) Corrigir a detecção do Bitrix (remover falso “Modo desenvolvimento”)
-   - Ajustar `BitrixContext`:
-     - Aumentar timeout de detecção do `window.BX24` (ex.: 10–15s) ou implementar re-tentativas progressivas (ex.: 3s, 6s, 12s) antes de assumir “dev mode”.
-     - Se o app já entrou em “dev mode” e depois `window.BX24` aparecer, reexecutar a inicialização (sem precisar recarregar).
-   - Resultado: dentro do Bitrix, o app deixa de “cair” no modo desenvolvimento por causa de atraso de rede.
+## Plano de Implementação
 
-Sequência recomendada
-- Primeiro: (1) + (2) para eliminar o problema imediatamente após logout.
-- Depois: (3) para reduzir fragilidade em iframe.
-- Depois: (4) para garantir validação consistente no backend.
-- Por fim: (5) para resolver a raiz do “Modo desenvolvimento” dentro do Bitrix.
+### Fase 1: Auto-vinculação de usuário ao tenant Bitrix
 
-Critérios de aceite (como vamos validar)
-- Dentro do Bitrix24:
-  - Abrir o app e criar empresa com sucesso na primeira tentativa.
-  - Clicar em “sair/resetar sessão” e imediatamente conseguir criar empresa (sem recarregar).
-  - O botão “Criar Empresa” não permite clique enquanto não houver sessão pronta.
-  - O app não exibe “Modo desenvolvimento” de forma permanente quando o SDK está disponível (ou se exibir, ele se corrige sozinho quando BX24 carregar).
-- Verificar no console:
-  - Logs indicando criação/recriação de sessão anônima.
-- Verificar no backend:
-  - A função `create-company` recebe a requisição e retorna 200 com `company`.
+**Edge Function `link-user-to-company`** (nova)
+- Recebe: `member_id` do Bitrix + token do usuário anônimo
+- Procura empresa com `bitrix_member_id = member_id`
+- Se existir e usuário não for membro, adiciona como membro
+- Retorna a empresa vinculada
 
-Riscos e observações
-- Alguns ambientes de iframe podem bloquear storage/cookies de terceiros: mesmo com correções, pode ser necessário abrir o app em “nova aba” pelo Bitrix ou ajustar configurações do navegador. O plano acima minimiza, mas não elimina 100% essas limitações do browser.
-- Manteremos a segurança: a função `create-company` continuará exigindo token válido; apenas garantiremos que o app sempre tenha uma sessão anônima válida quando estiver no Bitrix.
+**BitrixContext.tsx** (atualizar)
+- Após obter `auth.member_id` do BX24:
+  - Chamar `link-user-to-company` passando o `member_id`
+  - Atualizar `companyId` no contexto automaticamente
+- Resultado: usuário já entra com empresa vinculada, sem precisar do wizard
 
-Arquivos que provavelmente serão ajustados (técnico)
-- Frontend:
-  - `src/components/layout/AppLayout.tsx` (botão “sair” → resetar sessão)
-  - `src/hooks/useAuth.ts` (adicionar método resetSession ou suporte a sign-in anônimo pós-logout)
-  - `src/hooks/useCompany.ts` (invoke + ensure session/retry)
-  - `src/components/setup/steps/CompanySetup.tsx` (UI/disable + reconectar)
-  - `src/contexts/BitrixContext.tsx` (retries de BX24 e/ou re-init; opcionalmente re-auth pós SIGNED_OUT)
-- Backend:
-  - `supabase/functions/create-company/index.ts` (getClaims + logs + client duplo)
+### Fase 2: Simplificar o fluxo do Setup Wizard
 
-Teste end-to-end guiado (passo a passo para você)
-1) Abrir o app dentro do Bitrix24.
-2) Ir em Dashboard → Setup → Empresa.
-3) Criar empresa.
-4) Clicar no botão de sair/reset.
-5) Criar empresa novamente (em outro tenant/ambiente de teste) ou validar que o botão não quebra e que a sessão volta automaticamente.
+**useCompany.ts** (atualizar)
+- `currentCompany`: Além de buscar por `company_members`, também buscar por `bitrix_member_id` se estiver dentro do Bitrix
+
+**SetupWizard.tsx** (atualizar)
+- Se `currentCompany` existir (via auto-vinculação), pular direto para credenciais
+
+**CompanySetup.tsx** (simplificar)
+- Se já houver empresa (via `bitrix_member_id`), mostrar apenas um card de confirmação
+- Remover o formulário de criação quando dentro do Bitrix
+
+### Fase 3: Remover/ajustar botão de reset no header
+
+**AppLayout.tsx** (atualizar)
+- Remover o botão de reset de sessão (ou esconder quando dentro do Bitrix)
+- Alternativa: Manter apenas para modo desenvolvimento
+- Motivo: Não faz sentido resetar sessão no Bitrix (causa confusão e quebra o fluxo)
+
+### Fase 4: Limpeza de dados (one-time)
+
+**Script de migração** (opcional)
+- Vincular empresas órfãs criadas manualmente ao `bitrix_member_id` correto
+- Remover empresas duplicadas sem uso
+
+## Arquivos a Modificar
+
+### Backend (Edge Functions)
+- `supabase/functions/link-user-to-company/index.ts` (novo)
+  - Recebe `member_id` e token
+  - Busca empresa pelo `bitrix_member_id`
+  - Adiciona usuário como membro se não existir
+  - Retorna empresa
+
+### Frontend
+- `src/contexts/BitrixContext.tsx`
+  - Chamar `link-user-to-company` após inicializar BX24
+  - Atualizar `companyId` automaticamente
+  
+- `src/hooks/useCompany.ts`
+  - Adicionar parâmetro opcional `memberId` para buscar empresa alternativa
+  - Priorizar busca por `bitrix_member_id` quando disponível
+
+- `src/components/setup/SetupWizard.tsx`
+  - Detectar se empresa já existe via Bitrix
+  - Pular passo de empresa automaticamente
+
+- `src/components/setup/steps/CompanySetup.tsx`
+  - Mostrar "Empresa vinculada" em vez de formulário quando via Bitrix
+
+- `src/components/layout/AppLayout.tsx`
+  - Remover/esconder botão de reset de sessão
+
+## Fluxo Final (como vai funcionar)
+
+```text
++---------------------+
+|  Usuário abre app   |
+|  dentro do Bitrix   |
++---------------------+
+          |
+          v
++---------------------+
+|  BX24.init()        |
+|  Obtém member_id    |
++---------------------+
+          |
+          v
++---------------------+
+|  link-user-to-      |
+|  company (edge fn)  |
++---------------------+
+          |
+    +-----+-----+
+    |           |
+    v           v
++--------+  +--------+
+| Existe |  |  Não   |
+| empresa|  | existe |
++--------+  +--------+
+    |           |
+    v           v
++--------+  +--------+
+| Vincula|  | Mostra |
+| usuário|  | erro   |
++--------+  +--------+
+    |
+    v
++---------------------+
+|  Setup Wizard       |
+|  Pula para passo 2  |
+|  (Credenciais)      |
++---------------------+
+```
+
+## Critérios de Sucesso
+
+1. Abrir app dentro do Bitrix: empresa aparece automaticamente vinculada
+2. Não mostra formulário de "Criar Empresa"
+3. Sem botão de "sair/reset" no header
+4. Recarregar página mantém empresa vinculada
+5. Múltiplos usuários do portal Bitrix veem mesma empresa
+
+## Riscos e Mitigações
+
+- **Modo desenvolvimento** (fora do Bitrix): Manter comportamento atual de criar empresa manualmente
+- **Empresas órfãs**: Script de limpeza ou deixar usuário escolher se já existe empresa com mesmo `member_id`
+
