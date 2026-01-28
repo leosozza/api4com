@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import type { BX24, BX24Auth, BX24CallMethodResult, BX24UserInfo } from '@/types/bitrix24';
 import { supabase } from '@/integrations/supabase/client';
+import type { User } from '@supabase/supabase-js';
 
 interface BitrixContextState {
   isInitialized: boolean;
@@ -11,6 +12,7 @@ interface BitrixContextState {
   companyId: string | null;
   isAdmin: boolean;
   error: string | null;
+  supabaseUser: User | null;
 }
 
 interface BitrixContextValue extends BitrixContextState {
@@ -21,6 +23,7 @@ interface BitrixContextValue extends BitrixContextState {
   refreshAuth: () => Promise<BX24Auth | null>;
   resizeWindow: (width: number, height: number) => void;
   fitWindow: () => void;
+  isAuthenticated: boolean;
 }
 
 const BitrixContext = createContext<BitrixContextValue | null>(null);
@@ -39,6 +42,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
     companyId: null,
     isAdmin: false,
     error: null,
+    supabaseUser: null,
   });
 
   const getBX24 = useCallback((): BX24 | null => {
@@ -123,20 +127,49 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
     }
   }, []);
 
-  // Fetch current user info from Bitrix
-  const fetchCurrentUser = useCallback(async (): Promise<BX24UserInfo | null> => {
+  // Ensure Supabase anonymous auth
+  const ensureSupabaseAuth = useCallback(async (): Promise<User | null> => {
     try {
-      const user = await callMethod<BX24UserInfo>('user.current');
-      return user;
+      // Check for existing session
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session?.user) {
+        console.log('Existing Supabase session found');
+        return session.user;
+      }
+
+      // No session - sign in anonymously
+      console.log('No session, signing in anonymously...');
+      const { data, error } = await supabase.auth.signInAnonymously();
+      
+      if (error) {
+        console.error('Anonymous sign-in error:', error);
+        return null;
+      }
+      
+      console.log('Anonymous sign-in successful');
+      return data.user;
     } catch (error) {
-      console.error('Error fetching current user:', error);
+      console.error('Error ensuring Supabase auth:', error);
       return null;
     }
-  }, [callMethod]);
+  }, []);
 
-  // Initialize BX24 SDK
+  // Listen for Supabase auth changes
   useEffect(() => {
-    const initBitrix = () => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setState(prev => ({ ...prev, supabaseUser: session?.user ?? null }));
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Initialize BX24 SDK and Supabase auth
+  useEffect(() => {
+    const initBitrix = async () => {
+      // First, ensure Supabase auth
+      const supabaseUser = await ensureSupabaseAuth();
+      
       const bx24 = getBX24();
       
       if (!bx24) {
@@ -147,6 +180,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
           isInitialized: true,
           isLoading: false,
           isInBitrix: false,
+          supabaseUser,
         }));
         return;
       }
@@ -164,6 +198,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
             isInitialized: true,
             isLoading: false,
             isInBitrix: true,
+            supabaseUser,
             error: 'Failed to get authentication data',
           }));
           return;
@@ -189,6 +224,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
           companyId,
           isAdmin,
           error: null,
+          supabaseUser,
         });
 
         // Fit window to content
@@ -213,16 +249,11 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
         clearInterval(checkInterval);
         if (!window.BX24) {
           console.log('BX24 SDK timeout - running in development mode');
-          setState(prev => ({
-            ...prev,
-            isInitialized: true,
-            isLoading: false,
-            isInBitrix: false,
-          }));
+          initBitrix();
         }
       }, 3000);
     }
-  }, [getBX24, callMethod, findOrCreateCompany]);
+  }, [getBX24, callMethod, findOrCreateCompany, ensureSupabaseAuth]);
 
   const value: BitrixContextValue = {
     ...state,
@@ -230,6 +261,7 @@ export function BitrixProvider({ children }: BitrixProviderProps) {
     refreshAuth,
     resizeWindow,
     fitWindow,
+    isAuthenticated: !!state.supabaseUser,
   };
 
   return (
