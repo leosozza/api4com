@@ -96,24 +96,59 @@ Deno.serve(async (req) => {
         );
       }
     }
-    // Handle form-urlencoded data
-    else if (contentType.includes("application/x-www-form-urlencoded")) {
+    // Handle form-urlencoded data (Bitrix24 sends individual fields, not nested JSON)
+    else if (contentType.includes("application/x-www-form-urlencoded") || bodyText.includes("=")) {
       console.log("Parsing as form-urlencoded...");
       const formData = parseFormBody(bodyText);
       console.log("Form data keys:", Object.keys(formData));
       
-      const authRaw = formData["auth"];
-      const dataRaw = formData["data"];
-      const eventRaw = formData["event"];
+      // Bitrix24 sends data in individual fields, not as nested "auth" object
+      // Check for individual Bitrix24 fields (uppercase format)
+      const authId = formData["AUTH_ID"];
+      const refreshId = formData["REFRESH_ID"];
+      const authExpires = formData["AUTH_EXPIRES"];
+      const serverEndpoint = formData["SERVER_ENDPOINT"];
+      const memberId = formData["member_id"];
       
-      console.log("auth raw type:", typeof authRaw);
-      console.log("auth raw (first 200 chars):", authRaw?.substring?.(0, 200) || authRaw);
+      // Domain comes from query params
+      const domain = url.searchParams.get("DOMAIN") || "";
       
-      body = {
-        event: eventRaw || "ONAPPINSTALL",
-        auth: safeJsonParse(authRaw, {} as BitrixAuth),
-        data: safeJsonParse(dataRaw, undefined),
-      };
+      console.log("AUTH_ID present:", !!authId);
+      console.log("REFRESH_ID present:", !!refreshId);
+      console.log("member_id:", memberId);
+      console.log("DOMAIN from query:", domain);
+      console.log("SERVER_ENDPOINT:", serverEndpoint);
+      
+      if (authId && memberId) {
+        // Build auth object from individual fields
+        body = {
+          event: formData["event"] || "ONAPPINSTALL",
+          auth: {
+            access_token: authId,
+            refresh_token: refreshId || "",
+            expires_in: parseInt(authExpires || "3600", 10),
+            domain: domain,
+            member_id: memberId,
+            client_endpoint: serverEndpoint || `https://${domain}/rest/`,
+            application_token: formData["application_token"] || "",
+          } as BitrixAuth,
+        };
+        console.log("Built auth from individual fields");
+      } else {
+        // Fallback: try parsing as nested JSON (old format)
+        const authRaw = formData["auth"];
+        const dataRaw = formData["data"];
+        const eventRaw = formData["event"];
+        
+        console.log("Trying nested auth format...");
+        console.log("auth raw type:", typeof authRaw);
+        
+        body = {
+          event: eventRaw || "ONAPPINSTALL",
+          auth: safeJsonParse(authRaw, {} as BitrixAuth),
+          data: safeJsonParse(dataRaw, undefined),
+        };
+      }
     }
     // Handle JSON data
     else if (contentType.includes("application/json")) {
@@ -138,20 +173,7 @@ Deno.serve(async (req) => {
           body = JSON.parse(bodyText);
           console.log("Auto-detected as JSON");
         } catch {
-          console.log("Not valid JSON, trying form-urlencoded...");
-        }
-      }
-      
-      // Try form-urlencoded if JSON failed
-      if (!body.auth && bodyText.includes("=")) {
-        const formData = parseFormBody(bodyText);
-        if (formData["auth"]) {
-          console.log("Auto-detected as form-urlencoded");
-          body = {
-            event: formData["event"] || "ONAPPINSTALL",
-            auth: safeJsonParse(formData["auth"], {} as BitrixAuth),
-            data: safeJsonParse(formData["data"], undefined),
-          };
+          console.log("Not valid JSON");
         }
       }
     }
