@@ -1,0 +1,10 @@
+project_id = "xdyumezeouultnxssnlc"
+
+[functions.api4com-webhook]
+verify_jwt = false
+
+[functions.bitrix24-webhook]
+verify_jwt = false
+
+[functions.test-connection]
+verify_jwt = false

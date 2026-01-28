@@ -1,0 +1,92 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { supabase } from '@/integrations/supabase/client';
+import type { ExternalPhoneLine } from '@/types/api4com';
+
+export function usePhoneLines(companyId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  const { data: phoneLines, isLoading } = useQuery({
+    queryKey: ['phone-lines', companyId],
+    queryFn: async () => {
+      if (!companyId) return [];
+      const { data, error } = await supabase
+        .from('external_phone_lines')
+        .select('*')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: true });
+      
+      if (error) throw error;
+      return data as ExternalPhoneLine[];
+    },
+    enabled: !!companyId,
+  });
+
+  const addPhoneLine = useMutation({
+    mutationFn: async (line: { line_number: string; line_name?: string; is_default?: boolean }) => {
+      if (!companyId) throw new Error('Company not found');
+      
+      // If this is the default line, unset other defaults
+      if (line.is_default) {
+        await supabase
+          .from('external_phone_lines')
+          .update({ is_default: false })
+          .eq('company_id', companyId);
+      }
+      
+      const { error } = await supabase
+        .from('external_phone_lines')
+        .insert({ company_id: companyId, ...line });
+      
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['phone-lines', companyId] });
+    },
+  });
+
+  const updatePhoneLine = useMutation({
+    mutationFn: async ({ id, ...updates }: { id: string; line_number?: string; line_name?: string; is_default?: boolean }) => {
+      if (!companyId) throw new Error('Company not found');
+      
+      // If setting as default, unset other defaults first
+      if (updates.is_default) {
+        await supabase
+          .from('external_phone_lines')
+          .update({ is_default: false })
+          .eq('company_id', companyId);
+      }
+      
+      const { error } = await supabase
+        .from('external_phone_lines')
+        .update(updates)
+        .eq('id', id);
+      
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['phone-lines', companyId] });
+    },
+  });
+
+  const deletePhoneLine = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from('external_phone_lines')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['phone-lines', companyId] });
+    },
+  });
+
+  return {
+    phoneLines: phoneLines ?? [],
+    isLoading,
+    addPhoneLine,
+    updatePhoneLine,
+    deletePhoneLine,
+  };
+}
