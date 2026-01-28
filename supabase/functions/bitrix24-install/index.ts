@@ -5,21 +5,52 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+interface BitrixAuth {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  domain: string;
+  member_id: string;
+  client_endpoint: string;
+  application_token: string;
+}
+
 interface BitrixInstallEvent {
   event: string;
-  auth: {
-    access_token: string;
-    refresh_token: string;
-    expires_in: number;
-    domain: string;
-    member_id: string;
-    client_endpoint: string;
-    application_token: string;
-  };
+  auth: BitrixAuth;
   data?: {
     LANGUAGE_ID?: string;
     VERSION?: number;
   };
+}
+
+// Helper to safely parse JSON
+function safeJsonParse<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+  if (typeof value === "object") {
+    return value as T;
+  }
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      console.log("Failed to parse JSON string:", value.substring(0, 100));
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+// Parse form data from URLSearchParams format
+function parseFormBody(body: string): Record<string, string> {
+  const params = new URLSearchParams(body);
+  const result: Record<string, string> = {};
+  for (const [key, value] of params.entries()) {
+    result[key] = value;
+  }
+  return result;
 }
 
 Deno.serve(async (req) => {
@@ -29,28 +60,125 @@ Deno.serve(async (req) => {
 
   try {
     const contentType = req.headers.get("content-type") || "";
-    let body: BitrixInstallEvent;
+    const url = new URL(req.url);
+    
+    console.log("=== Bitrix24 Install Request ===");
+    console.log("Method:", req.method);
+    console.log("Content-Type:", contentType);
+    console.log("URL:", req.url);
+    console.log("Query params:", Object.fromEntries(url.searchParams.entries()));
 
-    // Bitrix can send data as form-urlencoded or JSON
-    if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await req.formData();
-      const event = formData.get("event") as string;
-      const authRaw = formData.get("auth");
-      const dataRaw = formData.get("data");
+    // Clone the request to read body as text first for logging
+    const bodyText = await req.text();
+    console.log("Raw body (first 500 chars):", bodyText.substring(0, 500));
+    console.log("Body length:", bodyText.length);
+
+    let body: Partial<BitrixInstallEvent> = {};
+
+    // Handle empty body case
+    if (!bodyText || bodyText.trim() === "") {
+      console.log("Empty body received, checking query params...");
       
-      const auth = authRaw ? JSON.parse(authRaw as string) : {};
-      const data = dataRaw ? JSON.parse(dataRaw as string) : {};
+      // Check if data is in query params (some Bitrix versions do this)
+      const queryEvent = url.searchParams.get("event");
+      const queryAuth = url.searchParams.get("auth");
       
-      body = { event, auth, data };
-    } else {
-      body = await req.json();
+      if (queryAuth) {
+        body = {
+          event: queryEvent || "ONAPPINSTALL",
+          auth: safeJsonParse(queryAuth, {} as BitrixAuth),
+        };
+      } else {
+        console.error("No data found in body or query params");
+        return new Response(
+          JSON.stringify({ error: "No installation data received" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+    // Handle form-urlencoded data
+    else if (contentType.includes("application/x-www-form-urlencoded")) {
+      console.log("Parsing as form-urlencoded...");
+      const formData = parseFormBody(bodyText);
+      console.log("Form data keys:", Object.keys(formData));
+      
+      const authRaw = formData["auth"];
+      const dataRaw = formData["data"];
+      const eventRaw = formData["event"];
+      
+      console.log("auth raw type:", typeof authRaw);
+      console.log("auth raw (first 200 chars):", authRaw?.substring?.(0, 200) || authRaw);
+      
+      body = {
+        event: eventRaw || "ONAPPINSTALL",
+        auth: safeJsonParse(authRaw, {} as BitrixAuth),
+        data: safeJsonParse(dataRaw, undefined),
+      };
+    }
+    // Handle JSON data
+    else if (contentType.includes("application/json")) {
+      console.log("Parsing as JSON...");
+      try {
+        body = JSON.parse(bodyText);
+      } catch (e) {
+        console.error("Failed to parse JSON body:", e);
+        return new Response(
+          JSON.stringify({ error: "Invalid JSON body" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+    // Try to auto-detect format
+    else {
+      console.log("Unknown content-type, attempting auto-detection...");
+      
+      // Try JSON first
+      if (bodyText.startsWith("{") || bodyText.startsWith("[")) {
+        try {
+          body = JSON.parse(bodyText);
+          console.log("Auto-detected as JSON");
+        } catch {
+          console.log("Not valid JSON, trying form-urlencoded...");
+        }
+      }
+      
+      // Try form-urlencoded if JSON failed
+      if (!body.auth && bodyText.includes("=")) {
+        const formData = parseFormBody(bodyText);
+        if (formData["auth"]) {
+          console.log("Auto-detected as form-urlencoded");
+          body = {
+            event: formData["event"] || "ONAPPINSTALL",
+            auth: safeJsonParse(formData["auth"], {} as BitrixAuth),
+            data: safeJsonParse(formData["data"], undefined),
+          };
+        }
+      }
     }
 
-    console.log("Bitrix24 install event received:", JSON.stringify({
-      event: body.event,
-      domain: body.auth?.domain,
-      member_id: body.auth?.member_id,
-    }));
+    console.log("Parsed event:", body.event);
+    console.log("Parsed auth domain:", body.auth?.domain);
+    console.log("Parsed auth member_id:", body.auth?.member_id);
+    console.log("Has access_token:", !!body.auth?.access_token);
+    console.log("Has refresh_token:", !!body.auth?.refresh_token);
+
+    const { auth } = body;
+
+    if (!auth?.member_id || !auth?.domain) {
+      console.error("Missing required auth fields");
+      console.error("Auth object:", JSON.stringify(auth, null, 2));
+      return new Response(
+        JSON.stringify({ 
+          error: "Missing required auth fields",
+          received: {
+            has_member_id: !!auth?.member_id,
+            has_domain: !!auth?.domain,
+            auth_keys: auth ? Object.keys(auth) : [],
+          }
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -60,16 +188,6 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const { auth } = body;
-
-    if (!auth?.member_id || !auth?.domain) {
-      console.error("Missing required auth fields");
-      return new Response(
-        JSON.stringify({ error: "Missing required auth fields" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
 
     // Calculate token expiration
     const expiresAt = new Date(Date.now() + (auth.expires_in || 3600) * 1000).toISOString();
@@ -99,10 +217,10 @@ Deno.serve(async (req) => {
           company_id: companyId,
           domain: auth.domain,
           access_token: auth.access_token,
-          refresh_token: auth.refresh_token,
+          refresh_token: auth.refresh_token || null,
           expires_at: expiresAt,
           member_id: auth.member_id,
-          client_endpoint: auth.client_endpoint,
+          client_endpoint: auth.client_endpoint || null,
         }, {
           onConflict: 'company_id',
         });
@@ -138,10 +256,10 @@ Deno.serve(async (req) => {
           company_id: companyId,
           domain: auth.domain,
           access_token: auth.access_token,
-          refresh_token: auth.refresh_token,
+          refresh_token: auth.refresh_token || null,
           expires_at: expiresAt,
           member_id: auth.member_id,
-          client_endpoint: auth.client_endpoint,
+          client_endpoint: auth.client_endpoint || null,
         });
 
       if (credError) {
@@ -151,16 +269,19 @@ Deno.serve(async (req) => {
     }
 
     // Register webhooks for telephony events
-    const webhookBaseUrl = `${supabaseUrl}/functions/v1/bitrix24-webhook`;
-    
-    try {
-      // Register ONEXTERNALCALLSTART event handler
-      await registerBitrixEvent(auth, "ONEXTERNALCALLSTART", webhookBaseUrl);
-      await registerBitrixEvent(auth, "ONEXTERNALCALLBACKSTART", webhookBaseUrl);
-      console.log("Webhooks registered successfully");
-    } catch (webhookError) {
-      console.error("Error registering webhooks:", webhookError);
-      // Don't fail the installation if webhook registration fails
+    if (auth.client_endpoint && auth.access_token) {
+      const webhookBaseUrl = `${supabaseUrl}/functions/v1/bitrix24-webhook`;
+      
+      try {
+        await registerBitrixEvent(auth, "ONEXTERNALCALLSTART", webhookBaseUrl);
+        await registerBitrixEvent(auth, "ONEXTERNALCALLBACKSTART", webhookBaseUrl);
+        console.log("Webhooks registered successfully");
+      } catch (webhookError) {
+        console.error("Error registering webhooks:", webhookError);
+        // Don't fail the installation if webhook registration fails
+      }
+    } else {
+      console.log("Skipping webhook registration - missing client_endpoint or access_token");
     }
 
     console.log("Installation completed for company:", companyId);
@@ -188,7 +309,7 @@ Deno.serve(async (req) => {
 });
 
 async function registerBitrixEvent(
-  auth: BitrixInstallEvent["auth"],
+  auth: BitrixAuth,
   eventName: string,
   handlerUrl: string
 ): Promise<void> {
