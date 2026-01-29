@@ -78,14 +78,21 @@ Deno.serve(async (req) => {
   console.log("Headers:", Object.fromEntries(req.headers.entries()));
 
   try {
-    // Route based on action
+    // Route based on action and method
     switch (action) {
       case "install":
-        return await handleInstall(req, url);
+        // Install always requires POST (with auth data)
+        if (req.method === "POST") {
+          return await handleInstall(req, url);
+        } else {
+          // GET for install = show install page with BX24 SDK
+          return await handleInstallPage(url);
+        }
       
       case "settings":
       case "placement":
       default:
+        // Settings can be GET or POST - both should show the app
         return await handleSettingsOrPlacement(req, url);
     }
   } catch (error: unknown) {
@@ -98,9 +105,165 @@ Deno.serve(async (req) => {
   }
 });
 
-// Handle installation requests
+// Handle GET request to install page - show page that initializes BX24 SDK
+async function handleInstallPage(url: URL): Promise<Response> {
+  console.log("=== Install Page (GET) - Showing BX24 SDK initialization page ===");
+  
+  const supabaseUrl = getSupabaseUrl();
+  const domain = url.searchParams.get("DOMAIN") || "";
+  
+  // Return HTML page that initializes BX24 SDK and submits install data
+  const htmlResponse = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Api4Com - Instalação</title>
+  <script src="https://api.bitrix24.com/api/v1/"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      text-align: center;
+      padding: 40px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      max-width: 400px;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #e5e7eb;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    h1 { 
+      color: #1f2937; 
+      font-size: 1.25rem; 
+      margin-bottom: 10px;
+    }
+    p { 
+      color: #6b7280; 
+      font-size: 0.875rem;
+    }
+    .error { 
+      color: #ef4444; 
+      display: none;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner" id="spinner"></div>
+    <h1 id="title">Iniciando instalação...</h1>
+    <p id="status">Preparando o aplicativo Api4Com</p>
+    <p class="error" id="error">Ocorreu um erro na instalação.</p>
+  </div>
+  <script>
+    console.log('Install page loaded, initializing BX24 SDK...');
+    
+    BX24.init(function() {
+      console.log('BX24 SDK initialized');
+      document.getElementById('title').textContent = 'Instalando...';
+      document.getElementById('status').textContent = 'Configurando eventos de telefonia';
+      
+      // Get auth data from BX24 SDK
+      var auth = BX24.getAuth();
+      console.log('Auth data received:', auth ? 'yes' : 'no');
+      
+      if (auth && auth.access_token) {
+        // Post auth data to the install handler
+        var formData = new URLSearchParams();
+        formData.append('AUTH_ID', auth.access_token);
+        formData.append('REFRESH_ID', auth.refresh_token || '');
+        formData.append('AUTH_EXPIRES', String(auth.expires_in || 3600));
+        formData.append('member_id', auth.member_id || '');
+        formData.append('DOMAIN', auth.domain || '${domain}');
+        formData.append('SERVER_ENDPOINT', 'https://' + (auth.domain || '${domain}') + '/rest/');
+        
+        fetch('${supabaseUrl}/functions/v1/bitrix24-handler?action=install&DOMAIN=' + encodeURIComponent(auth.domain || '${domain}'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: formData.toString()
+        })
+        .then(function(response) {
+          console.log('Install POST response status:', response.status);
+          if (response.ok) {
+            document.getElementById('title').textContent = 'Instalação Concluída!';
+            document.getElementById('status').textContent = 'Finalizando...';
+            
+            // Call installFinish
+            setTimeout(function() {
+              try {
+                BX24.installFinish();
+                console.log('BX24.installFinish() called successfully');
+              } catch (e) {
+                console.error('Error calling installFinish:', e);
+              }
+            }, 1000);
+          } else {
+            throw new Error('Install failed with status ' + response.status);
+          }
+        })
+        .catch(function(error) {
+          console.error('Install error:', error);
+          document.getElementById('spinner').style.display = 'none';
+          document.getElementById('title').textContent = 'Erro na instalação';
+          document.getElementById('error').style.display = 'block';
+        });
+      } else {
+        console.error('No auth data available from BX24 SDK');
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('title').textContent = 'Erro de autenticação';
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('error').textContent = 'Não foi possível obter dados de autenticação. Tente reinstalar o app.';
+      }
+    });
+    
+    // Fallback timeout
+    setTimeout(function() {
+      if (typeof BX24 === 'undefined' || !BX24.getAuth) {
+        console.error('BX24 SDK not available after timeout');
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('title').textContent = 'SDK não disponível';
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('error').textContent = 'O SDK do Bitrix24 não está disponível. Esta página deve ser aberta dentro do Bitrix24.';
+      }
+    }, 10000);
+  </script>
+</body>
+</html>
+`;
+
+  return new Response(htmlResponse, { 
+    status: 200, 
+    headers: { 
+      ...corsHeaders, 
+      "Content-Type": "text/html; charset=utf-8" 
+    } 
+  });
+}
+
+// Handle installation requests (POST with auth data)
 async function handleInstall(req: Request, url: URL): Promise<Response> {
-  console.log("=== Processing Install ===");
+  console.log("=== Processing Install (POST) ===");
   
   const contentType = req.headers.get("content-type") || "";
   const bodyText = await req.text();
