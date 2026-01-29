@@ -1,119 +1,77 @@
 
-## Plano: Corrigir Desalinhamento de Dados entre Empresas
+# Plano: Corrigir Click-to-Call do Webphone
 
-### Diagnostico do Problema
+## Diagnóstico
 
-O erro "Edge Function returned a non-2xx status code" ocorre porque:
+O click-to-call não está funcionando porque:
 
-| Recurso | Empresa | ID |
-|---------|---------|-----|
-| Credenciais Bitrix24 | Portal thoth24.bitrix24.com.br | `82e09b93-8617-4692-9365-dd87cc77c60b` |
-| Linha Telefonica | Thoth24 solution | `54401a1c-9d80-42d8-ad73-d29290999b32` |
-| User Mapping | Portal thoth24.bitrix24.com.br | `82e09b93-8617-4692-9365-dd87cc77c60b` |
+1. **Evento não chega ao webhook**: Nenhum log foi registrado na edge function `bitrix24-webhook` quando você tentou fazer uma ligação
+2. **Mapeamento de usuário incorreto**: O mapeamento atual usa `bitrix24_user_id: 1`, mas o ID real do seu usuário no Bitrix24 provavelmente é diferente
+3. **Linha externa pode não estar vinculada corretamente**: A linha externa precisa estar associada ao usuário no Contact Center do Bitrix24
 
-Quando o usuario clica em "Registrar Eventos de Telefonia", o sistema:
-1. Usa o `currentCompany.id` (`54401a1c-9d80-42d8-ad73-d29290999b32`)
-2. A edge function busca credenciais Bitrix24 para essa empresa
-3. Nao encontra (retorno vazio) - as credenciais estao em outra empresa
-4. Retorna erro 404 "Bitrix24 credentials not found"
-
-### Causas do Desalinhamento
-
-Existem **4 empresas de teste** no banco de dados criadas em momentos diferentes durante o desenvolvimento. O portal Bitrix24 `thoth24.bitrix24.com.br` foi instalado quando a empresa `82e09b93-...` existia, mas depois o usuario criou outra empresa `54401a1c-...` e cadastrou recursos nela.
-
-### Solucao Proposta
-
-#### Opcao A: Corrigir Dados no Banco (Recomendado para testes)
-
-Migrar as credenciais Bitrix24 para a empresa que tem os recursos:
-
-```sql
--- Mover credenciais Bitrix24 para a empresa Thoth24 solution
-UPDATE bitrix24_credentials 
-SET company_id = '54401a1c-9d80-42d8-ad73-d29290999b32'
-WHERE company_id = '82e09b93-8617-4692-9365-dd87cc77c60b';
-
--- Mover user_mappings para a mesma empresa
-UPDATE user_mappings 
-SET company_id = '54401a1c-9d80-42d8-ad73-d29290999b32'
-WHERE company_id = '82e09b93-8617-4692-9365-dd87cc77c60b';
-```
-
-**Vantagem**: Solucao rapida para continuar testando
-**Desvantagem**: Nao resolve o problema estrutural
-
-#### Opcao B: Melhorar a Edge Function (Recomendado para producao)
-
-Modificar a edge function `register-telephony-events` para buscar credenciais pelo `member_id` do Bitrix24 em vez do `company_id`:
+## Problemas Identificados
 
 ```text
-1. Receber company_id no request
-2. Buscar a linha telefonica da empresa
-3. Buscar QUALQUER credencial Bitrix24 que tenha o mesmo portal
-   (usando o member_id ou domain como chave)
-4. Usar essas credenciais para registrar os eventos
++-------------------------+     +---------------------+     +------------------+
+| Bitrix24 Click-to-Call  | --> | ONEXTERNALCALLSTART | --> | bitrix24-webhook |
+|                         |     | (evento não enviado)|     | (sem logs)       |
++-------------------------+     +---------------------+     +------------------+
+                                        |
+                                        v
+                                +-------------------+
+                                | Possíveis Causas: |
+                                | 1. Usuário não    |
+                                |    vinculado à    |
+                                |    linha externa  |
+                                | 2. App não é o    |
+                                |    padrão para    |
+                                |    telefonia      |
+                                | 3. ID do usuário  |
+                                |    incorreto      |
+                                +-------------------+
 ```
 
-**Vantagem**: Mais resiliente a desalinhamentos
-**Desvantagem**: Requer mudanca na logica e pode causar confusao
+## Solução em 3 Etapas
 
-#### Opcao C: Limpar Dados e Reinstalar (Mais robusto)
+### Etapa 1: Descobrir o ID Real do Usuário Bitrix24
 
-1. Deletar todas as empresas de teste
-2. Reinstalar o app no Bitrix24
-3. Sistema cria empresa correta automaticamente
-4. Recadastrar credenciais Api4Com e linhas
+Invocar a edge function `sync-bitrix-users` para listar todos os usuários do portal Bitrix24 e identificar o ID correto do usuário que está fazendo as chamadas.
 
-### Recomendacao
+### Etapa 2: Atualizar o Mapeamento de Usuário
 
-Para continuar os testes agora, executar a **Opcao A** (migracao de dados).
+Corrigir o registro na tabela `user_mappings` para usar o ID real do usuário Bitrix24 (provavelmente `26` baseado nos logs anteriores) em vez de `1`.
 
-Para producao, implementar validacoes que impecam a criacao de multiplas empresas para o mesmo portal Bitrix24.
+### Etapa 3: Verificar Configuração no Bitrix24
 
-### Arquivos a Modificar (Opcao B)
+O Bitrix24 só envia o evento `ONEXTERNALCALLSTART` quando:
+- O usuário está **vinculado à linha externa** no Contact Center
+- O aplicativo é o **handler padrão** para chamadas externas
 
-| Arquivo | Modificacao |
-|---------|-------------|
-| `supabase/functions/register-telephony-events/index.ts` | Buscar credenciais por `member_id` ou `domain` alem do `company_id` |
-| `src/components/setup/steps/PhoneLinesSetup.tsx` | Passar `member_id` ao chamar a funcao |
+Será necessário verificar manualmente no Bitrix24:
+1. **Contact Center → Configurar números de telefone**
+2. Verificar se a linha `+5515996045202` está configurada
+3. Verificar se o usuário está autorizado a usar essa linha
 
-### Detalhes Tecnicos (Opcao B)
+---
 
-```typescript
-// Busca atual (falha se company_id estiver errado)
-const { data: credentials } = await supabase
-  .from("bitrix24_credentials")
-  .select("*")
-  .eq("company_id", company_id)
-  .single();
+## Detalhes Técnicos
 
-// Busca melhorada (fallback por member_id)
-let credentials = null;
+### Consulta para identificar usuários do Bitrix24
 
-// Primeira tentativa: por company_id
-const { data: byCompany } = await supabase
-  .from("bitrix24_credentials")
-  .select("*")
-  .eq("company_id", company_id)
-  .maybeSingle();
+Chamar a edge function `sync-bitrix-users` com o `company_id` correto para listar os usuários e seus IDs reais.
 
-if (byCompany) {
-  credentials = byCompany;
-} else {
-  // Fallback: buscar por member_id (se fornecido)
-  if (member_id) {
-    const { data: byMember } = await supabase
-      .from("bitrix24_credentials")
-      .select("*")
-      .eq("member_id", member_id)
-      .maybeSingle();
-    credentials = byMember;
-  }
-}
+### Atualização do mapeamento
+
+```sql
+UPDATE user_mappings 
+SET bitrix24_user_id = '<ID_CORRETO>' 
+WHERE company_id = '82e09b93-8617-4692-9365-dd87cc77c60b';
 ```
 
-### Proximos Passos
+### Verificação no Bitrix24 (manual)
 
-1. **Imediato**: Aprovar migracao de dados (Opcao A) para desbloquear testes
-2. **Curto prazo**: Implementar busca por fallback na edge function
-3. **Medio prazo**: Adicionar validacao para evitar empresas duplicadas por portal
+1. Acessar **Contact Center → Configurar números de telefone**
+2. Localizar a linha `+5515996045202 (Api4Com)`
+3. Clicar em **Configurações da linha**
+4. Verificar se os usuários corretos estão vinculados
+5. Verificar se o app está como **handler padrão**
