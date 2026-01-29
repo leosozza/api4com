@@ -1,74 +1,149 @@
 
 
-## Plano: Corrigir Fluxo de Click-to-Call
+## Plano: Corrigir Erro "App is not found" no Bitrix24 Telephony
 
-### Problema Diagnosticado
+### Diagnostico do Problema
 
-O Bitrix24 discou diretamente porque:
-1. **Sem mapeamento de usuario**: A tabela `user_mappings` esta vazia. O webhook precisa saber qual ramal Api4Com corresponde ao usuario Bitrix24 que clicou no numero.
-2. **Webhook nao registrado ou Bitrix usando telefonia interna**: Nao ha logs do `bitrix24-webhook`, indicando que o evento `ONEXTERNALCALLSTART` nao esta chegando.
-3. **Extensao Chrome Api4Com**: E obrigatoria para o WebPhone funcionar.
+A mensagem **"App is not found"** indica que:
 
-### Fluxo Esperado vs Atual
+1. **Os eventos de telefonia nao estao registrados**: O Bitrix24 nao sabe para onde enviar os eventos `ONEXTERNALCALLSTART` quando voce clica em um numero de telefone
+
+2. **Token OAuth expirado**: O `access_token` nas credenciais expirou em `2026-01-28 16:40:53` e precisa ser renovado via `refresh_token`
+
+3. **Linha externa nao registrada**: O Bitrix24 Contact Center precisa ter uma linha externa registrada via `telephony.externalLine.add` para que o app apareca nas opcoes de telefonia
+
+### Fluxo Atual vs Esperado
 
 ```text
-ESPERADO (com integracao):
-Usuario clica telefone no Bitrix
-    → Bitrix dispara ONEXTERNALCALLSTART
-    → bitrix24-webhook recebe evento
-    → Busca mapeamento (ramal do usuario)
-    → Chama API Api4Com /dialer
-    → WebPhone (extensao Chrome) toca
-    → Usuario atende no WebPhone
+ATUAL:
+Usuario clica no telefone no CRM
+    → Bitrix procura um handler para ONEXTERNALCALLSTART
+    → Nao encontra (evento nao registrado)
+    → Exibe "App is not found"
 
-ATUAL (sem configuracao):
-Usuario clica telefone no Bitrix
-    → Bitrix usa telefonia interna (SIP padrao)
-    → Chamada sai pelo softphone nativo do Bitrix
+ESPERADO:
+Usuario clica no telefone no CRM
+    → Bitrix dispara ONEXTERNALCALLSTART para o webhook registrado
+    → Edge function bitrix24-webhook recebe o evento
+    → Sistema busca mapeamento do usuario
+    → Origina chamada via Api4Com
+    → WebPhone toca
 ```
 
-### Correcoes Necessarias
+### Solucao Proposta
 
-#### 1. Criar Mapeamento de Usuario de Teste
-Inserir registro na tabela `user_mappings` com:
-- `company_id`: 82e09b93-8617-4692-9365-dd87cc77c60b
-- `api4com_extension`: O ramal do usuario (ex: "1000")
-- `bitrix24_user_id`: O ID do usuario Bitrix que fez o teste
+#### 1. Criar Edge Function para Registro Manual de Eventos
 
-#### 2. Verificar Registro do Evento no Bitrix24
-O evento `ONEXTERNALCALLSTART` precisa estar registrado no Bitrix24 apontando para:
+Nova funcao `register-telephony-events` que:
+- Renova o token OAuth usando o refresh_token
+- Registra eventos `ONEXTERNALCALLSTART` e `ONEXTERNALCALLBACKSTART`
+- Registra linha externa no Contact Center via `telephony.externalLine.add`
+
+**Endpoint**: `POST /functions/v1/register-telephony-events`
+
+**Codigo**:
+```typescript
+// supabase/functions/register-telephony-events/index.ts
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+
+// 1. Buscar credenciais do Bitrix24 para a empresa
+// 2. Renovar access_token usando refresh_token
+// 3. Registrar evento ONEXTERNALCALLSTART
+// 4. Registrar evento ONEXTERNALCALLBACKSTART  
+// 5. Registrar linha externa (telephony.externalLine.add)
+// 6. Atualizar tokens no banco
 ```
-https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-webhook
-```
 
-Isso deveria ter sido feito durante a instalacao do app (`bitrix24-install`).
+#### 2. Adicionar Botao no Setup Wizard
 
-#### 3. Adicionar Orientacoes no Setup Wizard
-- Verificar se a extensao Chrome Api4Com esta instalada
-- Mostrar instrucoes claras sobre o fluxo de chamadas
+Adicionar secao no `SetupWizard.tsx` ou pagina de Settings com:
+- Botao "Registrar Eventos de Telefonia"
+- Indicador de status (registrado/nao registrado)
+- Feedback visual do resultado
 
-### Proximos Passos
+#### 3. Atualizar bitrix24-install para Tratamento de Erros
 
-| Passo | Acao |
-|-------|------|
-| 1 | Criar mapeamento de usuario de teste no banco |
-| 2 | Verificar/registrar eventos de telefonia no Bitrix24 |
-| 3 | Testar chamada novamente com logs ativos |
-| 4 | Adicionar orientacoes da extensao Chrome no UI |
+Melhorar o registro automatico durante instalacao:
+- Adicionar logs detalhados de sucesso/falha
+- Armazenar status do registro de eventos no banco
+- Permitir re-registro manual caso falhe
 
-### Informacao Necessaria
+### Arquivos a Criar/Modificar
 
-Para criar o mapeamento, preciso saber:
-- **Seu ID de usuario no Bitrix24** (aparece na URL do perfil ou pode ser consultado via API)
-- **Seu ramal na Api4Com** (ex: 1000, 1001, etc.)
+| Arquivo | Acao | Descricao |
+|---------|------|-----------|
+| `supabase/functions/register-telephony-events/index.ts` | CRIAR | Edge function para registro manual de eventos |
+| `supabase/config.toml` | MODIFICAR | Adicionar config da nova funcao |
+| `src/components/setup/steps/PhoneLinesSetup.tsx` | MODIFICAR | Adicionar botao de registro de eventos |
+| `src/hooks/useBitrix.ts` | MODIFICAR | Adicionar metodo para chamar a nova funcao |
 
 ### Detalhes Tecnicos
 
-O `bitrix24-install` ja registra os eventos durante a instalacao:
+#### Renovacao de Token OAuth
+
 ```typescript
-await registerBitrixEvent(auth, "ONEXTERNALCALLSTART", webhookBaseUrl);
-await registerBitrixEvent(auth, "ONEXTERNALCALLBACKSTART", webhookBaseUrl);
+const refreshResponse = await fetch(`https://oauth.bitrix.info/oauth/token/`, {
+  method: "POST",
+  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  body: new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: BITRIX_CLIENT_ID,
+    client_secret: BITRIX_CLIENT_SECRET,
+    refresh_token: credentials.refresh_token,
+  }),
+});
 ```
 
-Porem, se o app foi instalado antes dessas linhas serem adicionadas, ou se houve erro, os eventos podem nao estar registrados.
+#### Registro de Evento
+
+```typescript
+await fetch(`https://${domain}/rest/event.bind`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    auth: access_token,
+    event: "ONEXTERNALCALLSTART",
+    handler: `${SUPABASE_URL}/functions/v1/bitrix24-webhook`,
+  }),
+});
+```
+
+#### Registro de Linha Externa
+
+```typescript
+await fetch(`https://${domain}/rest/telephony.externalLine.add`, {
+  method: "POST", 
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    auth: access_token,
+    NUMBER: phoneLineNumber, // ex: "+5511999999999"
+    NAME: "Api4Com",
+  }),
+});
+```
+
+### Segredos Necessarios
+
+A renovacao de tokens OAuth requer:
+- `BITRIX_CLIENT_ID`: ID do aplicativo no Marketplace
+- `BITRIX_CLIENT_SECRET`: Secret do aplicativo no Marketplace
+
+Estes precisam ser configurados como secrets no projeto.
+
+### Fluxo de Teste Apos Implementacao
+
+1. Acesse Configuracoes no app
+2. Clique em "Registrar Eventos de Telefonia"
+3. Aguarde confirmacao de sucesso
+4. Acesse Telefonia no Bitrix24
+5. Clique em um numero de telefone no CRM
+6. Verifique se o WebPhone recebe a chamada
+
+### Riscos e Mitigacoes
+
+| Risco | Mitigacao |
+|-------|-----------|
+| Token de refresh tambem expirou | Solicitar reinstalacao do app |
+| Permissoes insuficientes no app | Verificar escopos no Marketplace |
+| Rate limiting do Bitrix API | Adicionar retry com backoff |
 
