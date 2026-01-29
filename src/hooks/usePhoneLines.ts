@@ -21,6 +21,27 @@ export function usePhoneLines(companyId: string | undefined) {
     enabled: !!companyId,
   });
 
+  // Register line in Bitrix24
+  const registerLineInBitrix = async (lineNumber: string, lineName?: string) => {
+    if (!companyId) return { success: false };
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('register-external-line', {
+        body: { company_id: companyId, line_number: lineNumber, line_name: lineName }
+      });
+      
+      if (error) {
+        console.error('Error registering line in Bitrix:', error);
+        return { success: false, error: error.message };
+      }
+      
+      return { success: true, ...data };
+    } catch (err) {
+      console.error('Error calling register-external-line:', err);
+      return { success: false, error: 'Failed to register line' };
+    }
+  };
+
   const addPhoneLine = useMutation({
     mutationFn: async (line: { line_number: string; line_name?: string; is_default?: boolean }) => {
       if (!companyId) throw new Error('Company not found');
@@ -38,6 +59,10 @@ export function usePhoneLines(companyId: string | undefined) {
         .insert({ company_id: companyId, ...line });
       
       if (error) throw error;
+
+      // Register in Bitrix24 after local save
+      const bitrixResult = await registerLineInBitrix(line.line_number, line.line_name);
+      return { bitrixRegistered: bitrixResult.success, ...bitrixResult };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['phone-lines', companyId] });
@@ -82,11 +107,30 @@ export function usePhoneLines(companyId: string | undefined) {
     },
   });
 
+  // Sync all lines with Bitrix24
+  const syncAllWithBitrix = useMutation({
+    mutationFn: async () => {
+      if (!phoneLines) return { synced: 0, errors: 0 };
+      
+      let synced = 0;
+      let errors = 0;
+      
+      for (const line of phoneLines) {
+        const result = await registerLineInBitrix(line.line_number, line.line_name || undefined);
+        if (result.success) synced++;
+        else errors++;
+      }
+      
+      return { synced, errors };
+    },
+  });
+
   return {
     phoneLines: phoneLines ?? [],
     isLoading,
     addPhoneLine,
     updatePhoneLine,
     deletePhoneLine,
+    syncAllWithBitrix,
   };
 }

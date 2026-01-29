@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Plus, Trash2, Loader2, Phone, Star } from 'lucide-react';
+import { Plus, Trash2, Loader2, Phone, Star, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -26,7 +26,7 @@ interface PhoneLinesSetupProps {
 export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
   const [isLoading, setIsLoading] = useState(false);
   const { currentCompany } = useCompany();
-  const { phoneLines, addPhoneLine, deletePhoneLine, updatePhoneLine } = usePhoneLines(currentCompany?.id);
+  const { phoneLines, addPhoneLine, deletePhoneLine, updatePhoneLine, syncAllWithBitrix } = usePhoneLines(currentCompany?.id);
 
   const form = useForm({
     resolver: zodResolver(phoneLineSchema),
@@ -40,17 +40,30 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
   const onSubmit = async (data: z.infer<typeof phoneLineSchema>) => {
     setIsLoading(true);
     try {
-      await addPhoneLine.mutateAsync({
+      const result = await addPhoneLine.mutateAsync({
         line_number: data.line_number,
         line_name: data.line_name,
         is_default: data.is_default,
       });
       form.reset();
-      toast({ title: 'Linha adicionada!' });
-    } catch (error: any) {
+      
+      if (result?.bitrixRegistered) {
+        toast({ 
+          title: 'Linha adicionada!',
+          description: 'Linha registrada localmente e no Bitrix24.'
+        });
+      } else {
+        toast({ 
+          title: 'Linha adicionada!',
+          description: 'Linha salva. Você pode sincronizar com o Bitrix24 depois.',
+          variant: 'default'
+        });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
       toast({
         title: 'Erro',
-        description: error.message,
+        description: message,
         variant: 'destructive',
       });
     } finally {
@@ -62,10 +75,11 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
     try {
       await deletePhoneLine.mutateAsync(id);
       toast({ title: 'Linha removida!' });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
       toast({
         title: 'Erro',
-        description: error.message,
+        description: message,
         variant: 'destructive',
       });
     }
@@ -75,10 +89,37 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
     try {
       await updatePhoneLine.mutateAsync({ id, is_default: true });
       toast({ title: 'Linha padrão atualizada!' });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
       toast({
         title: 'Erro',
-        description: error.message,
+        description: message,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleSyncWithBitrix = async () => {
+    try {
+      const result = await syncAllWithBitrix.mutateAsync();
+      if (result.synced > 0) {
+        toast({ 
+          title: 'Sincronização concluída!',
+          description: `${result.synced} linha(s) sincronizada(s) com o Bitrix24.`
+        });
+      }
+      if (result.errors > 0) {
+        toast({ 
+          title: 'Sincronização parcial',
+          description: `${result.errors} linha(s) falharam ao sincronizar.`,
+          variant: 'destructive'
+        });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
+      toast({
+        title: 'Erro na sincronização',
+        description: message,
         variant: 'destructive',
       });
     }
@@ -86,6 +127,18 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
 
   return (
     <div className="space-y-6">
+      {/* Info banner about user mapping */}
+      <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
+        <AlertCircle className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+        <div className="text-sm">
+          <p className="font-medium text-blue-800 dark:text-blue-200">Mapeamento de Usuários</p>
+          <p className="text-blue-700 dark:text-blue-300">
+            O mapeamento de usuários aos ramais é feito diretamente no Contact Center do Bitrix24. 
+            Aqui você configura apenas as linhas telefônicas externas.
+          </p>
+        </div>
+      </div>
+
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -131,14 +184,31 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
               </FormItem>
             )}
           />
-          <Button type="submit" disabled={isLoading}>
-            {isLoading ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Plus className="mr-2 h-4 w-4" />
+          <div className="flex gap-2">
+            <Button type="submit" disabled={isLoading}>
+              {isLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="mr-2 h-4 w-4" />
+              )}
+              Adicionar Linha
+            </Button>
+            {phoneLines.length > 0 && (
+              <Button 
+                type="button" 
+                variant="outline"
+                onClick={handleSyncWithBitrix}
+                disabled={syncAllWithBitrix.isPending}
+              >
+                {syncAllWithBitrix.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                Sincronizar com Bitrix
+              </Button>
             )}
-            Adicionar Linha
-          </Button>
+          </div>
         </form>
       </Form>
 
@@ -199,6 +269,7 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
 
       {phoneLines.length > 0 && (
         <Button onClick={onComplete} className="w-full">
+          <Check className="mr-2 h-4 w-4" />
           Finalizar Configuração
         </Button>
       )}
