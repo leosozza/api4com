@@ -3,6 +3,7 @@
 export interface Company {
   id: string;
   name: string;
+  bitrix_member_id?: string;
   created_at: string;
   updated_at: string;
 }

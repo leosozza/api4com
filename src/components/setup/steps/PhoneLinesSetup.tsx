@@ -143,9 +143,13 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
     try {
       const defaultLine = phoneLines.find(l => l.is_default) || phoneLines[0];
       
+      // Get member_id from company for fallback lookup
+      const memberId = currentCompany.bitrix_member_id;
+      
       const { data, error } = await supabase.functions.invoke('register-telephony-events', {
         body: {
           company_id: currentCompany.id,
+          member_id: memberId,
           phone_line_number: defaultLine?.line_number,
           phone_line_name: defaultLine?.line_name || 'Api4Com',
         },

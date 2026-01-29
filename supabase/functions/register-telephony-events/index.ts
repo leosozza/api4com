@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { company_id, phone_line_number, phone_line_name } = await req.json();
+    const { company_id, phone_line_number, phone_line_name, member_id } = await req.json();
 
     if (!company_id) {
       return new Response(
@@ -50,21 +50,42 @@ Deno.serve(async (req) => {
 
     console.log("=== Register Telephony Events ===");
     console.log("Company ID:", company_id);
+    console.log("Member ID:", member_id);
     console.log("Phone Line:", phone_line_number);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // 1. Get Bitrix24 credentials
-    const { data: credentials, error: credError } = await supabase
+    // 1. Get Bitrix24 credentials - with fallback by member_id
+    let credentials = null;
+
+    // First try: by company_id
+    const { data: byCompany } = await supabase
       .from("bitrix24_credentials")
       .select("*")
       .eq("company_id", company_id)
-      .single();
+      .maybeSingle();
 
-    if (credError || !credentials) {
-      console.error("Bitrix24 credentials not found:", credError);
+    if (byCompany) {
+      credentials = byCompany;
+      console.log("Found credentials by company_id");
+    } else if (member_id) {
+      // Fallback: by member_id
+      const { data: byMember } = await supabase
+        .from("bitrix24_credentials")
+        .select("*")
+        .eq("member_id", member_id)
+        .maybeSingle();
+      
+      if (byMember) {
+        credentials = byMember;
+        console.log("Found credentials by member_id (fallback)");
+      }
+    }
+
+    if (!credentials) {
+      console.error("Bitrix24 credentials not found for company or member_id");
       return new Response(
-        JSON.stringify({ error: "Bitrix24 credentials not found for this company" }),
+        JSON.stringify({ error: "Bitrix24 credentials not found. Please ensure the app is installed in Bitrix24." }),
         { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -99,7 +120,7 @@ Deno.serve(async (req) => {
     const tokenData: BitrixTokenResponse = await refreshResponse.json();
     console.log("Token refreshed successfully");
 
-    // 3. Update tokens in database
+    // 3. Update tokens in database (use credentials.company_id to ensure correct company)
     const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000).toISOString();
     await supabase
       .from("bitrix24_credentials")
@@ -109,7 +130,7 @@ Deno.serve(async (req) => {
         expires_at: expiresAt,
         client_endpoint: tokenData.client_endpoint || credentials.client_endpoint,
       })
-      .eq("company_id", company_id);
+      .eq("id", credentials.id);
 
     console.log("Tokens updated in database");
 
