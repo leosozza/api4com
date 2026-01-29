@@ -8,6 +8,8 @@ const corsHeaders = {
 interface SetupRequest {
   company_id: string;
   api_token: string;
+  bitrix_user_id?: string;
+  user_name?: string;
 }
 
 interface Api4ComIntegrationResponse {
@@ -69,8 +71,21 @@ Deno.serve(async (req) => {
     const validationData = await validationResponse.json();
     console.log("Api4Com token valid, current integrations:", JSON.stringify(validationData));
 
-    // Domain will be set from the integration response or null
+    // Extract domain and extension from sippulse integration
     let api4comDomain: string | null = null;
+    let userExtension: string | null = null;
+    
+    if (Array.isArray(validationData)) {
+      const sippulseIntegration = validationData.find(
+        (integration: { gateway: string }) => integration.gateway === "sippulse"
+      );
+      
+      if (sippulseIntegration?.metadata) {
+        api4comDomain = sippulseIntegration.metadata.domain || null;
+        userExtension = sippulseIntegration.metadata.username || null;
+        console.log("Extracted from sippulse - Domain:", api4comDomain, "Extension:", userExtension);
+      }
+    }
 
     // Configure webhook on Api4Com with all event types
     const webhookUrl = `${supabaseUrl}/functions/v1/api4com-webhook`;
@@ -133,13 +148,49 @@ Deno.serve(async (req) => {
       console.error("Error updating credentials:", updateError);
     }
 
+    // Auto-create user mapping if we have extension and Bitrix user ID
+    let userMappingCreated = false;
+    if (userExtension && body.bitrix_user_id) {
+      console.log("Creating auto user mapping:", userExtension, "->", body.bitrix_user_id);
+      
+      // Check if mapping already exists
+      const { data: existingMapping } = await supabase
+        .from("user_mappings")
+        .select("id")
+        .eq("company_id", body.company_id)
+        .eq("api4com_extension", userExtension)
+        .maybeSingle();
+      
+      if (!existingMapping) {
+        const { error: mappingError } = await supabase
+          .from("user_mappings")
+          .insert({
+            company_id: body.company_id,
+            api4com_extension: userExtension,
+            bitrix24_user_id: body.bitrix_user_id,
+            user_name: body.user_name || null,
+          });
+        
+        if (mappingError) {
+          console.error("Error creating user mapping:", mappingError);
+        } else {
+          userMappingCreated = true;
+          console.log("User mapping created successfully");
+        }
+      } else {
+        console.log("User mapping already exists");
+      }
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
         domain: api4comDomain,
+        extension: userExtension,
         webhook_configured: webhookConfigured,
         webhook_url: webhookUrl,
         webhook_events: ["channel-create", "channel-answer", "channel-hangup"],
+        user_mapping_created: userMappingCreated,
         integration_result: integrationResult,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
