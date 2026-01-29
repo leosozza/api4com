@@ -259,6 +259,79 @@ Deno.serve(async (req) => {
       console.error("Error checking methods:", e);
     }
 
+    // 7. Check SIP connector status - CRITICAL for diagnosing SIP vs external line conflicts
+    console.log("Checking SIP connector status...");
+    try {
+      const sipStatusResponse = await fetch(
+        `https://${domain}/rest/voximplant.sip.connector.status?auth=${accessToken}`,
+        { method: "POST" }
+      );
+      const sipStatusResult = await sipStatusResponse.json();
+      results.checks = {
+        ...(results.checks as object),
+        sipConnectorStatus: sipStatusResult.result || null,
+        sipConnectorError: sipStatusResult.error || null,
+      };
+    } catch (e) {
+      console.error("Error checking SIP connector:", e);
+    }
+
+    // 8. Check registered SIP lines
+    console.log("Checking registered SIP lines...");
+    try {
+      const sipGetResponse = await fetch(
+        `https://${domain}/rest/voximplant.sip.get?auth=${accessToken}`,
+        { method: "POST" }
+      );
+      const sipGetResult = await sipGetResponse.json();
+      results.checks = {
+        ...(results.checks as object),
+        sipLines: sipGetResult.result || [],
+        sipLinesError: sipGetResult.error || null,
+      };
+    } catch (e) {
+      console.error("Error checking SIP lines:", e);
+    }
+
+    // 9. Check user's phone status (SIP phone activated?)
+    console.log("Checking user phone status...");
+    try {
+      const userGetResponse = await fetch(
+        `https://${domain}/rest/voximplant.user.get?auth=${accessToken}`,
+        { method: "POST" }
+      );
+      const userGetResult = await userGetResponse.json();
+      
+      // Find the current user or mapped users in the results
+      const usersWithPhoneInfo = userGetResult.result || [];
+      
+      results.checks = {
+        ...(results.checks as object),
+        voximplantUsers: usersWithPhoneInfo,
+        voximplantUsersError: userGetResult.error || null,
+      };
+    } catch (e) {
+      console.error("Error checking user phone status:", e);
+    }
+
+    // 10. Check if there's an SIP outgoing line configured (overrides external line)
+    console.log("Checking SIP outgoing line...");
+    try {
+      const sipOutgoingResponse = await fetch(
+        `https://${domain}/rest/voximplant.line.outgoing.sip.set?auth=${accessToken}`,
+        { 
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // Empty body just to query - this might return error if no SIP
+        }
+      );
+      // We're not actually setting, just checking the response
+      const sipOutgoingCheck = await sipOutgoingResponse.json();
+      console.log("SIP outgoing check response:", sipOutgoingCheck);
+    } catch (e) {
+      console.error("Error checking SIP outgoing:", e);
+    }
+
     // 7. Get user mapping from our database
     const { data: userMappings } = await supabase
       .from("user_mappings")
