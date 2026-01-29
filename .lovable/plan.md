@@ -1,77 +1,85 @@
 
-# Plano: Corrigir Click-to-Call do Webphone
+
+# Plano: Corrigir erro "App is not found" no Click-to-Call
 
 ## Diagnóstico
 
-O click-to-call não está funcionando porque:
+O erro "App is not found" indica que o Bitrix24 não consegue localizar o aplicativo quando tenta executar ações de telefonia. Mesmo com:
+- Eventos registrados corretamente (ONEXTERNALCALLSTART, ONEXTERNALCALLBACKSTART)
+- Linha externa cadastrada (+5515996045202)
+- Configurações de usuário corretas (SIP desconectado, linha Api4com selecionada)
 
-1. **Evento não chega ao webhook**: Nenhum log foi registrado na edge function `bitrix24-webhook` quando você tentou fazer uma ligação
-2. **Mapeamento de usuário incorreto**: O mapeamento atual usa `bitrix24_user_id: 1`, mas o ID real do seu usuário no Bitrix24 provavelmente é diferente
-3. **Linha externa pode não estar vinculada corretamente**: A linha externa precisa estar associada ao usuário no Contact Center do Bitrix24
+O Bitrix24 falha ao tentar carregar o app para processar a chamada.
 
-## Problemas Identificados
+## Causa Provável
+
+O Bitrix24 Marketplace requer que a URL do "Handler de Configuracoes" seja acessivel e retorne uma resposta valida. Se essa URL retornar erro ou nao for encontrada, o portal exibe "App is not found".
+
+Atualmente, o Handler configurado aponta para `https://api4com.lovable.app/settings`, mas quando o Bitrix24 tenta carregar essa URL em contexto de telefonia (fora do iframe padrao), pode haver problemas de:
+- Roteamento (React SPA nao responde a requisicoes POST do Bitrix)
+- Falta de tratamento para o evento de carga do app
+
+## Solucao
+
+### Parte 1: Criar Edge Function de Handler para o Marketplace
+
+Criar uma nova Edge Function `bitrix24-handler` que sera o ponto de entrada unico para todas as interacoes do Bitrix24 com o app (instalacao, configuracoes, eventos de telefonia).
 
 ```text
-+-------------------------+     +---------------------+     +------------------+
-| Bitrix24 Click-to-Call  | --> | ONEXTERNALCALLSTART | --> | bitrix24-webhook |
-|                         |     | (evento não enviado)|     | (sem logs)       |
-+-------------------------+     +---------------------+     +------------------+
-                                        |
-                                        v
-                                +-------------------+
-                                | Possíveis Causas: |
-                                | 1. Usuário não    |
-                                |    vinculado à    |
-                                |    linha externa  |
-                                | 2. App não é o    |
-                                |    padrão para    |
-                                |    telefonia      |
-                                | 3. ID do usuário  |
-                                |    incorreto      |
-                                +-------------------+
+supabase/functions/bitrix24-handler/index.ts
 ```
 
-## Solução em 3 Etapas
+Esta funcao ira:
+1. Detectar o tipo de requisicao (install, settings, placement)
+2. Para requisicoes de settings/placement: redirecionar para o app React
+3. Para requisicoes de instalacao: processar como faz o bitrix24-install atual
+4. Logar todas as requisicoes para diagnostico
 
-### Etapa 1: Descobrir o ID Real do Usuário Bitrix24
+### Parte 2: Atualizar URLs no Marketplace do Bitrix24
 
-Invocar a edge function `sync-bitrix-users` para listar todos os usuários do portal Bitrix24 e identificar o ID correto do usuário que está fazendo as chamadas.
+As URLs no Marketplace devem ser atualizadas para apontar para a Edge Function:
 
-### Etapa 2: Atualizar o Mapeamento de Usuário
+| Campo | URL Atual | URL Nova |
+|-------|-----------|----------|
+| Application URL | https://api4com.lovable.app | https://api4com.lovable.app |
+| Initial install path | /functions/v1/bitrix24-install | /functions/v1/bitrix24-handler?action=install |
+| Settings path | /settings | /functions/v1/bitrix24-handler?action=settings |
 
-Corrigir o registro na tabela `user_mappings` para usar o ID real do usuário Bitrix24 (provavelmente `26` baseado nos logs anteriores) em vez de `1`.
+### Parte 3: Adicionar Diagnostico na UI
 
-### Etapa 3: Verificar Configuração no Bitrix24
+Adicionar um botao "Diagnosticar Telefonia" na pagina de Configuracoes que:
+1. Chama a Edge Function `diagnose-telephony`
+2. Exibe os resultados em formato legivel
+3. Sugere acoes corretivas baseadas nos erros encontrados
 
-O Bitrix24 só envia o evento `ONEXTERNALCALLSTART` quando:
-- O usuário está **vinculado à linha externa** no Contact Center
-- O aplicativo é o **handler padrão** para chamadas externas
+### Parte 4: Melhorar Tratamento de Erros
 
-Será necessário verificar manualmente no Bitrix24:
-1. **Contact Center → Configurar números de telefone**
-2. Verificar se a linha `+5515996045202` está configurada
-3. Verificar se o usuário está autorizado a usar essa linha
+Atualizar o `bitrix24-webhook` para:
+1. Retornar respostas mais descritivas
+2. Lidar com casos onde o app nao e encontrado
+3. Tentar renovar tokens automaticamente se estiverem expirados
 
----
+## Arquivos a Modificar
 
-## Detalhes Técnicos
+1. **Criar**: `supabase/functions/bitrix24-handler/index.ts` - Handler unificado
+2. **Editar**: `supabase/config.toml` - Registrar nova funcao
+3. **Editar**: `src/components/setup/SetupWizard.tsx` - Adicionar botao de diagnostico
+4. **Criar**: `src/components/setup/TelephonyDiagnostics.tsx` - Componente de diagnostico
 
-### Consulta para identificar usuários do Bitrix24
+## Acao Manual Necessaria
 
-Chamar a edge function `sync-bitrix-users` com o `company_id` correto para listar os usuários e seus IDs reais.
+Apos implementar, voce precisara atualizar as URLs no painel do Marketplace do Bitrix24:
+1. Acesse o Partner portal do Bitrix24
+2. Edite o app "Api4Com"
+3. Atualize o "Initial install path" e "Settings path" para as novas URLs
+4. Salve e publique as alteracoes
+5. Reinstale o app no portal de teste para aplicar as novas configuracoes
 
-### Atualização do mapeamento
+## Resultado Esperado
 
-```sql
-UPDATE user_mappings 
-SET bitrix24_user_id = '<ID_CORRETO>' 
-WHERE company_id = '82e09b93-8617-4692-9365-dd87cc77c60b';
-```
+Apos as alteracoes:
+- O erro "App is not found" nao aparecera mais
+- O click-to-call disparara o evento ONEXTERNALCALLSTART
+- A Edge Function `bitrix24-webhook` recebera a requisicao
+- A ligacao sera originada via Api4Com
 
-### Verificação no Bitrix24 (manual)
-
-1. Acessar **Contact Center → Configurar números de telefone**
-2. Localizar a linha `+5515996045202 (Api4Com)`
-3. Clicar em **Configurações da linha**
-4. Verificar se os usuários corretos estão vinculados
-5. Verificar se o app está como **handler padrão**
