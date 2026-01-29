@@ -72,7 +72,7 @@ Deno.serve(async (req) => {
     // Domain will be set from the integration response or null
     let api4comDomain: string | null = null;
 
-    // Configure webhook on Api4Com
+    // Configure webhook on Api4Com with all event types
     const webhookUrl = `${supabaseUrl}/functions/v1/api4com-webhook`;
     console.log("Configuring webhook URL:", webhookUrl);
 
@@ -88,7 +88,8 @@ Deno.serve(async (req) => {
       metadata: {
         webhookUrl: webhookUrl,
         webhookVersion: "v1.4",
-        webhookTypes: ["channel-hangup"],
+        // Subscribe to all call lifecycle events
+        webhookTypes: ["channel-create", "channel-answer", "channel-hangup"],
         companyId: body.company_id,
       },
     };
@@ -138,6 +139,7 @@ Deno.serve(async (req) => {
         domain: api4comDomain,
         webhook_configured: webhookConfigured,
         webhook_url: webhookUrl,
+        webhook_events: ["channel-create", "channel-answer", "channel-hangup"],
         integration_result: integrationResult,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

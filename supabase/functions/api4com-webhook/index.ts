@@ -43,6 +43,16 @@ function getCallStatus(event: Api4ComWebhookV14): string {
   return "completed";
 }
 
+// Map status to Bitrix24 status code
+function getBitrixStatusCode(status: string): string {
+  switch (status) {
+    case "completed": return "200";
+    case "missed": return "304";
+    case "busy": return "486";
+    default: return "200";
+  }
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -72,75 +82,17 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Only process channel-hangup events (call completed)
-    if (body.eventType !== "channel-hangup") {
-      console.log("Ignoring event type:", body.eventType);
-      return new Response(
-        JSON.stringify({ success: true, message: "Event type ignored" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Find company by api4com_domain or by metadata.companyId
-    let companyId: string | null = null;
-    let api4comToken: string | null = null;
-
-    // First try to find by metadata.companyId (most reliable)
-    if (body.metadata?.companyId) {
-      const { data: creds } = await supabase
-        .from("api4com_credentials")
-        .select("company_id, api_token")
-        .eq("company_id", body.metadata.companyId)
-        .maybeSingle();
-      
-      if (creds) {
-        companyId = creds.company_id;
-        api4comToken = creds.api_token;
-        console.log("Found company by metadata.companyId:", companyId);
-      }
-    }
-
-    // Fallback: find by api4com_domain
-    if (!companyId && body.domain) {
-      const { data: creds } = await supabase
-        .from("api4com_credentials")
-        .select("company_id, api_token")
-        .eq("api4com_domain", body.domain)
-        .maybeSingle();
-      
-      if (creds) {
-        companyId = creds.company_id;
-        api4comToken = creds.api_token;
-        console.log("Found company by domain:", companyId);
-      }
-    }
-
-    // Fallback: find by gateway in metadata
-    if (!companyId && body.metadata?.gateway) {
-      // If gateway contains a specific identifier, try to match
-      console.log("Trying to find company by gateway:", body.metadata.gateway);
-      
-      // List all companies with api4com configured and find matching one
-      const { data: allCreds } = await supabase
-        .from("api4com_credentials")
-        .select("company_id, api_token, api4com_domain")
-        .eq("webhook_configured", true);
-      
-      if (allCreds && allCreds.length === 1) {
-        // If only one company configured, use it
-        companyId = allCreds[0].company_id;
-        api4comToken = allCreds[0].api_token;
-        console.log("Found single configured company:", companyId);
-      }
-    }
-
-    if (!companyId) {
+    // Find company by metadata.companyId or domain
+    const companyData = await findCompany(supabase, body);
+    if (!companyData) {
       console.error("Company not found for domain:", body.domain);
       return new Response(
         JSON.stringify({ error: "Company not found", domain: body.domain }),
         { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    const { companyId } = companyData;
 
     // Find user mapping by caller (extension/ramal)
     const extension = body.direction === "outbound" ? body.caller : body.called;
@@ -158,85 +110,37 @@ Deno.serve(async (req) => {
     // Get default phone line
     const { data: phoneLine } = await supabase
       .from("external_phone_lines")
-      .select("id")
+      .select("id, line_number")
       .eq("company_id", companyId)
       .eq("is_default", true)
       .maybeSingle();
 
     // Determine phone number (the external party)
     const phoneNumber = body.direction === "outbound" ? body.called : body.caller;
-    const callStatus = getCallStatus(body);
 
-    console.log("Phone number:", phoneNumber);
-    console.log("Call status:", callStatus);
+    // Handle different event types
+    switch (body.eventType) {
+      case "channel-create":
+        // Chamada iniciada - mostrar popup no Bitrix para chamadas recebidas
+        await handleCallCreate(supabase, companyId, body, userMapping, phoneLine, phoneNumber);
+        break;
 
-    // Create or update call log
-    const { data: existingCall } = await supabase
-      .from("call_logs")
-      .select("id")
-      .eq("api4com_call_id", body.id)
-      .maybeSingle();
+      case "channel-answer":
+        // Chamada atendida - atualizar status
+        await handleCallAnswer(supabase, companyId, body);
+        break;
 
-    if (existingCall) {
-      // Update existing call
-      const { error: updateError } = await supabase
-        .from("call_logs")
-        .update({
-          status: callStatus,
-          duration_seconds: body.duration || 0,
-          recording_url: body.recordUrl || null,
-          call_ended_at: body.endedAt,
-        })
-        .eq("id", existingCall.id);
+      case "channel-hangup":
+        // Chamada finalizada - registrar no CRM
+        await handleCallHangup(supabase, companyId, body, userMapping, phoneLine, phoneNumber);
+        break;
 
-      if (updateError) {
-        console.error("Error updating call log:", updateError);
-      } else {
-        console.log("Call log updated:", existingCall.id);
-      }
-    } else {
-      // Insert new call log
-      const { data: newCall, error: insertError } = await supabase
-        .from("call_logs")
-        .insert({
-          api4com_call_id: body.id,
-          company_id: companyId,
-          user_mapping_id: userMapping?.id || null,
-          external_line_id: phoneLine?.id || null,
-          direction: body.direction,
-          phone_number: phoneNumber,
-          status: callStatus,
-          duration_seconds: body.duration || 0,
-          recording_url: body.recordUrl || null,
-          bitrix_call_id: body.metadata?.bitrixCallId || null,
-          call_started_at: body.startedAt,
-          call_ended_at: body.endedAt,
-        })
-        .select("id")
-        .single();
-
-      if (insertError) {
-        console.error("Error inserting call log:", insertError);
-      } else {
-        console.log("Call log created:", newCall?.id);
-      }
-    }
-
-    // Notify Bitrix24 about call completion
-    if (userMapping?.bitrix24_user_id) {
-      await finishBitrix24Call(supabase, companyId, {
-        call_id: body.metadata?.bitrixCallId || body.id,
-        phone_number: phoneNumber,
-        duration: body.duration || 0,
-        recording_url: body.recordUrl,
-        user_id: userMapping.bitrix24_user_id,
-        status: callStatus,
-        direction: body.direction,
-      });
+      default:
+        console.log("Ignoring event type:", body.eventType);
     }
 
     return new Response(
-      JSON.stringify({ success: true, call_id: body.id, status: callStatus }),
+      JSON.stringify({ success: true, call_id: body.id, event: body.eventType }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: unknown) {
@@ -249,22 +153,331 @@ Deno.serve(async (req) => {
   }
 });
 
-// Notify Bitrix24 about call completion using telephony.externalcall.finish
+// Find company by various methods
+// deno-lint-ignore no-explicit-any
+async function findCompany(supabase: any, body: Api4ComWebhookV14): Promise<{ companyId: string } | null> {
+  // First try to find by metadata.companyId (most reliable)
+  if (body.metadata?.companyId) {
+    const { data: creds } = await supabase
+      .from("api4com_credentials")
+      .select("company_id")
+      .eq("company_id", body.metadata.companyId)
+      .maybeSingle();
+    
+    if (creds) {
+      console.log("Found company by metadata.companyId:", creds.company_id);
+      return { companyId: creds.company_id };
+    }
+  }
+
+  // Fallback: find by api4com_domain
+  if (body.domain) {
+    const { data: creds } = await supabase
+      .from("api4com_credentials")
+      .select("company_id")
+      .eq("api4com_domain", body.domain)
+      .maybeSingle();
+    
+    if (creds) {
+      console.log("Found company by domain:", creds.company_id);
+      return { companyId: creds.company_id };
+    }
+  }
+
+  // Fallback: find by gateway in metadata
+  if (body.metadata?.gateway) {
+    console.log("Trying to find company by gateway:", body.metadata.gateway);
+    
+    const { data: allCreds } = await supabase
+      .from("api4com_credentials")
+      .select("company_id")
+      .eq("webhook_configured", true);
+    
+    if (allCreds && allCreds.length === 1) {
+      console.log("Found single configured company:", allCreds[0].company_id);
+      return { companyId: allCreds[0].company_id };
+    }
+  }
+
+  return null;
+}
+
+// Handle channel-create event - show popup in Bitrix for inbound calls
+// deno-lint-ignore no-explicit-any
+async function handleCallCreate(
+  supabase: any,
+  companyId: string,
+  body: Api4ComWebhookV14,
+  userMapping: { id: string; bitrix24_user_id: string } | null,
+  phoneLine: { id: string; line_number: string } | null,
+  phoneNumber: string
+): Promise<void> {
+  console.log("=== Handling channel-create (call started) ===");
+
+  // Create call log with status "ringing"
+  const { data: newCall, error: insertError } = await supabase
+    .from("call_logs")
+    .insert({
+      api4com_call_id: body.id,
+      company_id: companyId,
+      user_mapping_id: userMapping?.id || null,
+      external_line_id: phoneLine?.id || null,
+      direction: body.direction,
+      phone_number: phoneNumber,
+      status: "ringing",
+      duration_seconds: 0,
+      call_started_at: body.startedAt,
+    })
+    .select("id")
+    .single();
+
+  if (insertError) {
+    console.error("Error inserting call log:", insertError);
+  } else {
+    console.log("Call log created (ringing):", newCall?.id);
+  }
+
+  // For inbound calls, show popup in Bitrix24
+  if (body.direction === "inbound" && userMapping?.bitrix24_user_id) {
+    console.log("Registering inbound call popup in Bitrix24...");
+    const bitrixCallId = await registerBitrix24Call(supabase, companyId, {
+      user_id: userMapping.bitrix24_user_id,
+      phone_number: phoneNumber,
+      direction: body.direction,
+      line_number: phoneLine?.line_number,
+      call_start_date: body.startedAt,
+      show: true, // Show popup
+      crm_create: true,
+    });
+
+    if (bitrixCallId && newCall?.id) {
+      // Store Bitrix call ID for later use
+      await supabase
+        .from("call_logs")
+        .update({ bitrix_call_id: bitrixCallId })
+        .eq("id", newCall.id);
+      console.log("Bitrix call ID stored:", bitrixCallId);
+    }
+  }
+}
+
+// Handle channel-answer event - update status to answered
+// deno-lint-ignore no-explicit-any
+async function handleCallAnswer(
+  supabase: any,
+  companyId: string,
+  body: Api4ComWebhookV14
+): Promise<void> {
+  console.log("=== Handling channel-answer (call answered) ===");
+
+  const { error: updateError } = await supabase
+    .from("call_logs")
+    .update({
+      status: "answered",
+    })
+    .eq("api4com_call_id", body.id)
+    .eq("company_id", companyId);
+
+  if (updateError) {
+    console.error("Error updating call log:", updateError);
+  } else {
+    console.log("Call log updated to answered");
+  }
+}
+
+// Handle channel-hangup event - finalize call and register in CRM
+// deno-lint-ignore no-explicit-any
+async function handleCallHangup(
+  supabase: any,
+  companyId: string,
+  body: Api4ComWebhookV14,
+  userMapping: { id: string; bitrix24_user_id: string } | null,
+  phoneLine: { id: string; line_number: string } | null,
+  phoneNumber: string
+): Promise<void> {
+  console.log("=== Handling channel-hangup (call ended) ===");
+
+  const callStatus = getCallStatus(body);
+  console.log("Call status:", callStatus);
+
+  // Update or create call log
+  const { data: existingCall } = await supabase
+    .from("call_logs")
+    .select("id, bitrix_call_id")
+    .eq("api4com_call_id", body.id)
+    .maybeSingle();
+
+  if (existingCall) {
+    // Update existing call
+    const { error: updateError } = await supabase
+      .from("call_logs")
+      .update({
+        status: callStatus,
+        duration_seconds: body.duration || 0,
+        recording_url: body.recordUrl || null,
+        call_ended_at: body.endedAt,
+      })
+      .eq("id", existingCall.id);
+
+    if (updateError) {
+      console.error("Error updating call log:", updateError);
+    } else {
+      console.log("Call log updated:", existingCall.id);
+    }
+
+    // Finish call in Bitrix24
+    if (userMapping?.bitrix24_user_id) {
+      await finishBitrix24Call(supabase, companyId, {
+        call_id: existingCall.bitrix_call_id || body.metadata?.bitrixCallId || body.id,
+        user_id: userMapping.bitrix24_user_id,
+        duration: body.duration || 0,
+        status_code: getBitrixStatusCode(callStatus),
+        recording_url: body.recordUrl,
+      });
+    }
+  } else {
+    // Insert new call log (for calls not captured by channel-create)
+    const { data: newCall, error: insertError } = await supabase
+      .from("call_logs")
+      .insert({
+        api4com_call_id: body.id,
+        company_id: companyId,
+        user_mapping_id: userMapping?.id || null,
+        external_line_id: phoneLine?.id || null,
+        direction: body.direction,
+        phone_number: phoneNumber,
+        status: callStatus,
+        duration_seconds: body.duration || 0,
+        recording_url: body.recordUrl || null,
+        bitrix_call_id: body.metadata?.bitrixCallId || null,
+        call_started_at: body.startedAt,
+        call_ended_at: body.endedAt,
+      })
+      .select("id")
+      .single();
+
+    if (insertError) {
+      console.error("Error inserting call log:", insertError);
+    } else {
+      console.log("Call log created:", newCall?.id);
+    }
+
+    // Register and finish call in Bitrix24
+    if (userMapping?.bitrix24_user_id) {
+      // For outbound calls not captured by channel-create, register then finish
+      const bitrixCallId = await registerBitrix24Call(supabase, companyId, {
+        user_id: userMapping.bitrix24_user_id,
+        phone_number: phoneNumber,
+        direction: body.direction,
+        line_number: phoneLine?.line_number,
+        call_start_date: body.startedAt,
+        show: false, // Don't show popup for completed calls
+        crm_create: true,
+      });
+
+      if (bitrixCallId) {
+        await finishBitrix24Call(supabase, companyId, {
+          call_id: bitrixCallId,
+          user_id: userMapping.bitrix24_user_id,
+          duration: body.duration || 0,
+          status_code: getBitrixStatusCode(callStatus),
+          recording_url: body.recordUrl,
+        });
+      }
+    }
+  }
+}
+
+// Register call in Bitrix24 using telephony.externalcall.register
+// deno-lint-ignore no-explicit-any
+async function registerBitrix24Call(
+  supabase: any,
+  companyId: string,
+  data: {
+    user_id: string;
+    phone_number: string;
+    direction: string;
+    line_number?: string;
+    call_start_date: string;
+    show: boolean;
+    crm_create: boolean;
+  }
+): Promise<string | null> {
+  console.log("Registering call in Bitrix24:", data);
+
+  const { data: bitrixCreds } = await supabase
+    .from("bitrix24_credentials")
+    .select("domain, webhook_url, access_token, client_endpoint")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (!bitrixCreds) {
+    console.log("No Bitrix24 credentials found for company");
+    return null;
+  }
+
+  try {
+    const baseUrl = bitrixCreds.client_endpoint || 
+      (bitrixCreds.webhook_url ? bitrixCreds.webhook_url : `https://${bitrixCreds.domain}/rest/`);
+
+    const endpoint = baseUrl.includes("/rest/") 
+      ? `${baseUrl}telephony.externalcall.register`
+      : `${baseUrl}/telephony.externalcall.register`;
+
+    const requestBody: Record<string, unknown> = {
+      USER_ID: data.user_id,
+      PHONE_NUMBER: data.phone_number,
+      TYPE: data.direction === "inbound" ? "2" : "1", // 1 = outbound, 2 = inbound
+      CALL_START_DATE: data.call_start_date,
+      CRM_CREATE: data.crm_create ? "1" : "0",
+      SHOW: data.show ? "1" : "0",
+    };
+
+    if (data.line_number) {
+      requestBody.LINE_NUMBER = data.line_number;
+    }
+
+    if (bitrixCreds.access_token) {
+      requestBody.auth = bitrixCreds.access_token;
+    }
+
+    console.log("Bitrix24 register request:", endpoint);
+    console.log("Request body:", JSON.stringify(requestBody));
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+
+    const result = await response.json();
+    console.log("Bitrix24 register response:", JSON.stringify(result));
+
+    if (result?.result?.CALL_ID) {
+      return result.result.CALL_ID;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Error registering call in Bitrix24:", error);
+    return null;
+  }
+}
+
+// Finish call in Bitrix24 using telephony.externalcall.finish
 // deno-lint-ignore no-explicit-any
 async function finishBitrix24Call(
   supabase: any,
   companyId: string,
   data: {
     call_id: string;
-    phone_number: string;
-    duration: number;
-    recording_url?: string;
     user_id: string;
-    status: string;
-    direction: string;
+    duration: number;
+    status_code: string;
+    recording_url?: string;
   }
 ): Promise<void> {
-  console.log("Finishing Bitrix24 call:", data);
+  console.log("Finishing call in Bitrix24:", data);
 
   const { data: bitrixCreds } = await supabase
     .from("bitrix24_credentials")
@@ -277,74 +490,41 @@ async function finishBitrix24Call(
     return;
   }
 
-  // Determine the API base URL
-  const baseUrl = bitrixCreds.client_endpoint || 
-    (bitrixCreds.webhook_url ? bitrixCreds.webhook_url : `https://${bitrixCreds.domain}/rest/`);
-
-  // First, register the call if it wasn't registered before
-  // This is needed for calls that originated from Api4Com directly
   try {
-    const registerEndpoint = baseUrl.includes("/rest/") 
-      ? `${baseUrl}telephony.externalcall.register`
-      : `${baseUrl}/telephony.externalcall.register`;
+    const baseUrl = bitrixCreds.client_endpoint || 
+      (bitrixCreds.webhook_url ? bitrixCreds.webhook_url : `https://${bitrixCreds.domain}/rest/`);
 
-    const registerBody: Record<string, unknown> = {
-      USER_ID: data.user_id,
-      PHONE_NUMBER: data.phone_number,
-      TYPE: data.direction === "inbound" ? "2" : "1",
-      CALL_START_DATE: new Date().toISOString(),
-      CRM_CREATE: "1",
-    };
-
-    if (bitrixCreds.access_token) {
-      registerBody.auth = bitrixCreds.access_token;
-    }
-
-    console.log("Registering call in Bitrix24:", registerEndpoint);
-    const registerResponse = await fetch(registerEndpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(registerBody),
-    });
-
-    const registerResult = await registerResponse.json();
-    console.log("Bitrix24 register response:", registerResult);
-
-    // Get the CALL_ID from the register response
-    const bitrixCallId = registerResult?.result?.CALL_ID || data.call_id;
-
-    // Now finish the call
-    const finishEndpoint = baseUrl.includes("/rest/")
+    const endpoint = baseUrl.includes("/rest/")
       ? `${baseUrl}telephony.externalcall.finish`
       : `${baseUrl}/telephony.externalcall.finish`;
 
-    const finishBody: Record<string, unknown> = {
-      CALL_ID: bitrixCallId,
+    const requestBody: Record<string, unknown> = {
+      CALL_ID: data.call_id,
       USER_ID: data.user_id,
       DURATION: data.duration,
-      STATUS_CODE: data.status === "completed" ? "200" : 
-                   data.status === "missed" ? "304" : 
-                   data.status === "busy" ? "486" : "200",
+      STATUS_CODE: data.status_code,
     };
 
     if (bitrixCreds.access_token) {
-      finishBody.auth = bitrixCreds.access_token;
+      requestBody.auth = bitrixCreds.access_token;
     }
 
     if (data.recording_url) {
-      finishBody.RECORD_URL = data.recording_url;
+      requestBody.RECORD_URL = data.recording_url;
     }
 
-    console.log("Finishing call in Bitrix24:", finishEndpoint);
-    const finishResponse = await fetch(finishEndpoint, {
+    console.log("Bitrix24 finish request:", endpoint);
+    console.log("Request body:", JSON.stringify(requestBody));
+
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(finishBody),
+      body: JSON.stringify(requestBody),
     });
 
-    const finishResult = await finishResponse.json();
-    console.log("Bitrix24 finish response:", finishResult);
+    const result = await response.json();
+    console.log("Bitrix24 finish response:", JSON.stringify(result));
   } catch (error) {
-    console.error("Error notifying Bitrix24:", error);
+    console.error("Error finishing call in Bitrix24:", error);
   }
 }
