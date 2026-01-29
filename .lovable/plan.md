@@ -1,60 +1,90 @@
 
 
-# Plano: Corrigir Registro de Linha Externa no Bitrix24
+# Plano: Resolver "App is not found" e Configurar o Conector Corretamente
 
-## Problema Identificado
+## Status Atual (O que JA esta funcionando)
 
-O diagnóstico revela que:
-1. **externalLines: []** - A linha externa NAO esta registrada no Bitrix24
-2. **voximplantOutgoingGet: "LINK_BASE_NUMBER"** - O provedor de saida esta configurado para telefonia INTERNA
-3. **resolvedDefaultLine: null** - Nossa linha nao foi encontrada no sistema de telefonia
+Baseado nos logs de diagnostico mais recentes:
 
-A causa raiz: o componente `TelephonyDiagnostics.tsx` chama a funcao `register-telephony-events` sem passar o parametro `phone_line_number`, logo a linha nunca e registrada.
+| Item | Status | Valor |
+|------|--------|-------|
+| Eventos registrados | OK | ONEXTERNALCALLSTART, ONEXTERNALCALLBACKSTART |
+| Linha externa no Bitrix | OK | +5515996045202 (Api4Com) |
+| Provedor de saida | OK | +5515996045202 |
+| Mapeamento de usuario | OK | User 1 → Ramal 1000 |
+| App instalado | OK | thoth24_solution.api4com (STATUS: F = Free) |
+
+## Problema
+
+Quando voce clica para ligar, o Bitrix24 mostra "App is not found" porque ele nao consegue carregar a URL do aplicativo. Isso acontece porque as URLs no Partner Portal podem estar apontando para locais inacessiveis.
 
 ## Solucao
 
-### Parte 1: Corrigir o componente TelephonyDiagnostics
+### Passo 1: Atualizar URLs no Partner Portal do Bitrix24
 
-Modificar a funcao `runRepair` para:
-1. Buscar a linha telefonica padrao do banco de dados antes de chamar o reparo
-2. Passar `phone_line_number` e `phone_line_name` para a Edge Function
+Acesse o Partner Portal e edite o app "Api4Com" com estas URLs:
 
 ```text
-Arquivo: src/components/setup/TelephonyDiagnostics.tsx
+Application URL (URL principal): 
+https://api4com.lovable.app
+
+Initial install path (Caminho de instalacao):
+https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=install
+
+Settings path (Caminho de configuracoes):
+https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=settings
 ```
 
-Alteracoes:
-- Antes de chamar `register-telephony-events`, buscar a linha padrao da empresa usando `supabase.from("external_phone_lines").select()`
-- Passar os dados da linha no body da requisicao
+### Passo 2: Verificar Permissoes do App
 
-### Parte 2: Melhorar feedback visual
+No Partner Portal, confirme que o app tem estas permissoes (scopes):
+- telephony
+- crm
+- user
+- placement
 
-Adicionar indicadores mais claros no diagnostico:
-- Mostrar explicitamente que a linha precisa ser registrada no Bitrix
-- Mostrar o status do provedor de saida (voximplantOutgoingGet)
-- Adicionar badge para "Provedor Saida" mostrando se esta correto ou nao
+### Passo 3: Reinstalar o App no Portal de Teste
 
-### Parte 3: Adicionar botao de registro completo
+1. Acesse o portal thoth24.bitrix24.com.br
+2. Va em Aplicativos → Aplicativos instalados
+3. Encontre "Api4Com" e clique em "Desinstalar"
+4. Reinstale o app novamente
 
-Criar um botao "Registrar Linha no Bitrix" que:
-1. Busca a linha padrao
-2. Chama `register-telephony-events` com todos os parametros
-3. Exibe feedback claro sobre o resultado
+### Passo 4: Reconfigurar a Linha no Contact Center
 
-## Arquivos a Modificar
+Apos reinstalar:
+1. Va em Contact Center → Linhas Telefonicas
+2. Localize a linha Api4Com (+5515996045202)
+3. Clique nela e atribua aos usuarios desejados
+4. Defina como linha padrao para chamadas de saida
 
-1. **Editar**: `src/components/setup/TelephonyDiagnostics.tsx`
-   - Corrigir `runRepair` para incluir `phone_line_number`
-   - Adicionar badge de status do provedor de saida
-   - Melhorar mensagens de erro
+### Passo 5: Testar o Click-to-Call
+
+1. Abra um contato/lead no CRM
+2. Clique no numero de telefone
+3. O evento deve ser enviado para nosso webhook
+
+## Melhorias no Codigo (Opcional)
+
+Se o problema persistir apos os passos acima, podemos adicionar:
+
+1. **Adicionar suporte a HEAD no bitrix24-webhook** - O Bitrix24 envia requisicoes HEAD para validar endpoints antes de enviar eventos. Precisamos garantir que nosso webhook responde corretamente.
+
+2. **Melhorar logs de debug** - Adicionar mais detalhes nos logs para rastrear exatamente onde o problema ocorre.
 
 ## Resultado Esperado
 
-Apos as alteracoes:
-1. Clicar em "Reparar Eventos" ira:
-   - Registrar eventos ONEXTERNALCALLSTART/ONEXTERNALCALLBACKSTART
-   - Registrar a linha externa via `telephony.externalLine.add`
-   - Definir o provedor de saida via `voximplant.line.outgoing.set`
-2. O diagnostico mostrara "Linhas Bitrix" em verde
-3. O click-to-call no Bitrix24 acionara nosso webhook
+Apos atualizar as URLs e reinstalar o app:
+1. O erro "App is not found" nao deve mais aparecer
+2. Ao clicar para ligar, o evento ONEXTERNALCALLSTART sera enviado para o webhook
+3. O webhook registrara a chamada e iniciara o fluxo com a Api4Com
+
+## Resumo das URLs Importantes
+
+| Funcao | URL |
+|--------|-----|
+| App Principal | https://api4com.lovable.app |
+| Handler Instalacao | https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=install |
+| Handler Configuracoes | https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=settings |
+| Webhook de Eventos | https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-webhook |
 
