@@ -2,16 +2,18 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Plus, Trash2, Loader2, Phone, Star, RefreshCw, Check, AlertCircle } from 'lucide-react';
+import { Plus, Trash2, Loader2, Phone, Star, RefreshCw, Check, AlertCircle, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useCompany } from '@/hooks/useCompany';
 import { usePhoneLines } from '@/hooks/usePhoneLines';
 import { toast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 
 const phoneLineSchema = z.object({
   line_number: z.string().min(8, 'Número inválido').regex(/^[+\d\s()-]+$/, 'Formato inválido'),
@@ -25,6 +27,8 @@ interface PhoneLinesSetupProps {
 
 export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [isRegisteringEvents, setIsRegisteringEvents] = useState(false);
+  const [eventsRegistered, setEventsRegistered] = useState(false);
   const { currentCompany } = useCompany();
   const { phoneLines, addPhoneLine, deletePhoneLine, updatePhoneLine, syncAllWithBitrix } = usePhoneLines(currentCompany?.id);
 
@@ -125,8 +129,85 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
     }
   };
 
+  const handleRegisterTelephonyEvents = async () => {
+    if (!currentCompany?.id) {
+      toast({
+        title: 'Erro',
+        description: 'Empresa não encontrada',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsRegisteringEvents(true);
+    try {
+      const defaultLine = phoneLines.find(l => l.is_default) || phoneLines[0];
+      
+      const { data, error } = await supabase.functions.invoke('register-telephony-events', {
+        body: {
+          company_id: currentCompany.id,
+          phone_line_number: defaultLine?.line_number,
+          phone_line_name: defaultLine?.line_name || 'Api4Com',
+        },
+      });
+
+      if (error) throw error;
+
+      if (data?.success) {
+        setEventsRegistered(true);
+        toast({
+          title: 'Eventos registrados!',
+          description: data.message || 'Click-to-call agora está ativo.',
+        });
+      } else {
+        throw new Error(data?.message || 'Falha ao registrar eventos');
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
+      toast({
+        title: 'Erro ao registrar eventos',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsRegisteringEvents(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Telephony Events Registration */}
+      <Alert className={eventsRegistered ? 'border-green-500 bg-green-50 dark:bg-green-950' : 'border-amber-500 bg-amber-50 dark:bg-amber-950'}>
+        <Radio className={`h-5 w-5 ${eventsRegistered ? 'text-green-600' : 'text-amber-600'}`} />
+        <AlertTitle className={eventsRegistered ? 'text-green-800 dark:text-green-200' : 'text-amber-800 dark:text-amber-200'}>
+          {eventsRegistered ? 'Eventos de Telefonia Ativos' : 'Registrar Eventos de Telefonia'}
+        </AlertTitle>
+        <AlertDescription className={eventsRegistered ? 'text-green-700 dark:text-green-300' : 'text-amber-700 dark:text-amber-300'}>
+          {eventsRegistered ? (
+            'Click-to-call está configurado. Clique em um número no Bitrix24 para discar.'
+          ) : (
+            <>
+              Para que o click-to-call funcione, os eventos de telefonia precisam estar registrados no Bitrix24.
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 w-full"
+                onClick={handleRegisterTelephonyEvents}
+                disabled={isRegisteringEvents}
+              >
+                {isRegisteringEvents ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Radio className="mr-2 h-4 w-4" />
+                )}
+                Registrar Eventos de Telefonia
+              </Button>
+            </>
+          )}
+        </AlertDescription>
+      </Alert>
+
       {/* Info banner about user mapping */}
       <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
         <AlertCircle className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
