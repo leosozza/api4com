@@ -62,13 +62,35 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
     setIsRepairing(true);
 
     try {
+      // Fetch the default phone line from the database
+      const { data: phoneLines, error: phoneLinesError } = await supabase
+        .from('external_phone_lines')
+        .select('*')
+        .eq('company_id', companyId)
+        .eq('is_default', true)
+        .limit(1);
+
+      if (phoneLinesError) {
+        console.error('Error fetching phone lines:', phoneLinesError);
+      }
+
+      const defaultLine = phoneLines?.[0];
+      
       const { data, error } = await supabase.functions.invoke('register-telephony-events', {
-        body: { company_id: companyId },
+        body: { 
+          company_id: companyId,
+          phone_line_number: defaultLine?.line_number,
+          phone_line_name: defaultLine?.line_name || 'Api4Com',
+        },
       });
 
       if (error) throw error;
 
-      toast.success('Eventos de telefonia registrados com sucesso!');
+      if (data?.success) {
+        toast.success('Eventos de telefonia registrados com sucesso!');
+      } else {
+        toast.warning(`Reparo parcial: ${data?.message || 'Verifique os detalhes'}`);
+      }
       
       // Re-run diagnostics to show updated state
       await runDiagnostics();
@@ -95,6 +117,11 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
   const hasExternalLines = (result?.checks?.externalLines?.length ?? 0) > 0;
   const hasUserMappings = (result?.userMappings?.length ?? 0) > 0;
   const hasPhoneLines = (result?.phoneLines?.length ?? 0) > 0;
+  
+  // Check if outgoing provider is correctly set to our external line
+  const outgoingProvider = result?.checks?.voximplantOutgoingGet;
+  const defaultLineNumber = result?.checks?.defaultLineNumber;
+  const isOutgoingProviderCorrect = outgoingProvider === defaultLineNumber;
 
   return (
     <Card className="border-orange-200 bg-orange-50/50">
@@ -160,6 +187,10 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
                 {getStatusIcon(hasUserMappings)}
                 Mapeamentos
               </Badge>
+              <Badge variant={isOutgoingProviderCorrect ? "default" : "destructive"} className="gap-1">
+                {getStatusIcon(isOutgoingProviderCorrect)}
+                Provedor Saída
+              </Badge>
             </div>
 
             {/* Issues summary */}
@@ -172,6 +203,12 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
             {!hasExternalLines && hasPhoneLines && (
               <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
                 <strong>Aviso:</strong> Linhas locais configuradas mas não registradas no Bitrix24. O reparo irá registrá-las.
+              </div>
+            )}
+
+            {!isOutgoingProviderCorrect && result && (
+              <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
+                <strong>Aviso:</strong> Provedor de saída está configurado como "{String(outgoingProvider)}" em vez de "{defaultLineNumber}". O reparo irá corrigir.
               </div>
             )}
 
