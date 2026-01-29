@@ -10,6 +10,12 @@ interface DiagnoseRequest {
   company_id: string;
 }
 
+type BitrixApiResponse<T = unknown> = {
+  result?: T;
+  error?: string;
+  error_description?: string;
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -85,6 +91,17 @@ Deno.serve(async (req) => {
       domain,
       checks: {},
     };
+
+    // Fetch our default external line (if any) to help diagnosis
+    const { data: phoneLinesForCompany } = await supabase
+      .from("external_phone_lines")
+      .select("line_number, is_default")
+      .eq("company_id", body.company_id);
+
+    const defaultLineNumber =
+      phoneLinesForCompany?.find((l) => l.is_default)?.line_number ||
+      phoneLinesForCompany?.[0]?.line_number ||
+      null;
 
     // 1. Get registered events
     console.log("Checking registered events...");
@@ -167,30 +184,42 @@ Deno.serve(async (req) => {
       results.checks = { ...results.checks as object, currentUserError: String(e) };
     }
 
-    // 5. Check telephony settings/config
-    console.log("Checking telephony config...");
+    // 5. Inspect outgoing line and available lines (helps when Bitrix keeps using SIP)
+    console.log("Checking voximplant outgoing line + available lines...");
     try {
-      const configResponse = await fetch(
-        `https://${domain}/rest/voximplant.infocall.startwithtext?auth=${accessToken}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            FROM_LINE: "+5515996045202",
-            TO_NUMBER: "+5515999999999",
-            TEXT_TO_PRONOUNCE: "test",
-          }),
-        }
-      );
-      const configResult = await configResponse.json();
+      const [outgoingGetResp, linesGetResp, defaultLineIdResp] = await Promise.all([
+        fetch(`https://${domain}/rest/voximplant.line.outgoing.get?auth=${accessToken}`, { method: "POST" }),
+        fetch(`https://${domain}/rest/voximplant.line.get?auth=${accessToken}`, { method: "POST" }),
+        fetch(`https://${domain}/rest/voximplant.user.getdefaultlineid?auth=${accessToken}`, { method: "POST" }),
+      ]);
+
+      const outgoingGet: BitrixApiResponse = await outgoingGetResp.json();
+      const linesGet: BitrixApiResponse<Array<Record<string, unknown>>> = await linesGetResp.json();
+      const defaultLineId: BitrixApiResponse = await defaultLineIdResp.json();
+
+      const lines = linesGet.result || [];
+
+      const resolvedDefaultLine = defaultLineNumber
+        ? lines.find((l) => {
+            const candidates = [l.NUMBER, l.LINE_NUMBER, l.PHONE_NUMBER, l.PSTN, l.OUTGOING_NUMBER].filter(Boolean);
+            return candidates.some((v) => String(v) === defaultLineNumber);
+          })
+        : null;
+
       results.checks = {
-        ...results.checks as object,
-        voximplantTest: configResult.error 
-          ? { error: configResult.error, description: configResult.error_description }
-          : { available: true },
+        ...(results.checks as object),
+        defaultLineNumber,
+        voximplantOutgoingGet: outgoingGet.result || null,
+        voximplantOutgoingGetError: outgoingGet.error || null,
+        voximplantUserDefaultLineId: defaultLineId.result || null,
+        voximplantUserDefaultLineIdError: defaultLineId.error || null,
+        voximplantLines: lines,
+        voximplantLinesError: linesGet.error || null,
+        resolvedDefaultLine: resolvedDefaultLine || null,
       };
     } catch (e) {
-      console.error("Error checking voximplant:", e);
+      console.error("Error checking voximplant outgoing/lines:", e);
+      results.checks = { ...(results.checks as object), voximplantDiagnosticsError: String(e) };
     }
 
     // 6. List all telephony methods available
