@@ -2,7 +2,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 interface BitrixCallEvent {
@@ -19,6 +20,99 @@ interface BitrixCallEvent {
   };
 }
 
+function parseBracketObject(prefix: string, entries: Array<[string, string]>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of entries) {
+    if (!k.startsWith(prefix + "[")) continue;
+    const inner = k.slice(prefix.length + 1);
+    const end = inner.indexOf("]");
+    if (end <= 0) continue;
+    const key = inner.slice(0, end);
+    out[key] = v;
+  }
+  return out;
+}
+
+async function parseBitrixRequest(req: Request): Promise<BitrixCallEvent> {
+  const contentType = (req.headers.get("content-type") || "").toLowerCase();
+
+  // Bitrix typically sends POST as application/x-www-form-urlencoded.
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    const formData = await req.formData();
+    const entries = Array.from(formData.entries()).map(([k, v]) => [k, String(v)] as [string, string]);
+
+    const event = (formData.get("event") as string) || "";
+
+    // Bitrix can send either JSON strings (data/auth) or bracket notation (data[...], auth[...])
+    const dataRaw = formData.get("data");
+    const authRaw = formData.get("auth");
+
+    let data: Record<string, string> = {};
+    let auth: Record<string, string> = {};
+
+    if (typeof dataRaw === "string") {
+      try {
+        data = JSON.parse(dataRaw || "{}");
+      } catch {
+        // ignore, fallback
+      }
+    }
+    if (typeof authRaw === "string") {
+      try {
+        auth = JSON.parse(authRaw || "{}");
+      } catch {
+        // ignore, fallback
+      }
+    }
+
+    if (Object.keys(data).length === 0) data = parseBracketObject("data", entries);
+    if (Object.keys(auth).length === 0) auth = parseBracketObject("auth", entries);
+
+    return {
+      event,
+      data: {
+        PHONE_NUMBER: data.PHONE_NUMBER || "",
+        USER_ID: data.USER_ID || "",
+        CALL_ID: data.CALL_ID,
+        LINE_NUMBER: data.LINE_NUMBER,
+      },
+      auth: {
+        domain: auth.domain || "",
+        access_token: auth.access_token || "",
+      },
+    };
+  }
+
+  // Fallback: try text first (some clients/proxies don't set Content-Type correctly)
+  const rawText = await req.text();
+  const looksUrlEncoded = rawText.includes("=") && rawText.includes("&");
+
+  if (looksUrlEncoded) {
+    const params = new URLSearchParams(rawText);
+    const entries = Array.from(params.entries());
+    const event = params.get("event") || "";
+    const data = parseBracketObject("data", entries);
+    const auth = parseBracketObject("auth", entries);
+
+    return {
+      event,
+      data: {
+        PHONE_NUMBER: data.PHONE_NUMBER || "",
+        USER_ID: data.USER_ID || "",
+        CALL_ID: data.CALL_ID ?? undefined,
+        LINE_NUMBER: data.LINE_NUMBER ?? undefined,
+      },
+      auth: {
+        domain: auth.domain || "",
+        access_token: auth.access_token || "",
+      },
+    };
+  }
+
+  // Last resort: JSON
+  return JSON.parse(rawText) as BitrixCallEvent;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -31,27 +125,44 @@ Deno.serve(async (req) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
+  // Allow basic health checks (useful to validate reachability).
+  if (req.method === "GET") {
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   console.log("=== Bitrix24 Webhook ===");
   console.log("Method:", req.method);
   console.log("URL:", req.url);
   console.log("Headers:", Object.fromEntries(req.headers.entries()));
 
   try {
-    // Bitrix sends form-urlencoded data
-    const contentType = req.headers.get("content-type") || "";
-    let body: BitrixCallEvent;
+    const body = await parseBitrixRequest(req);
 
-    if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await req.formData();
-      const event = formData.get("event") as string;
-      const data = JSON.parse(formData.get("data") as string || "{}");
-      const auth = JSON.parse(formData.get("auth") as string || "{}");
-      body = { event, data, auth };
-    } else {
-      body = await req.json();
+    console.log(
+      "Bitrix24 webhook received:",
+      JSON.stringify({
+        event: body?.event,
+        data: body?.data,
+        auth: { domain: body?.auth?.domain, has_access_token: !!body?.auth?.access_token },
+      })
+    );
+
+    if (!body?.event) {
+      return new Response(JSON.stringify({ error: "Missing event" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    console.log("Bitrix24 webhook received:", JSON.stringify(body));
+    if (!body?.auth?.domain) {
+      return new Response(JSON.stringify({ error: "Missing auth.domain" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
