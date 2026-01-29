@@ -1,154 +1,230 @@
 
 
-## Objetivo
-Eliminar a necessidade de criar empresa manualmente dentro do Bitrix24. Quando o app for aberto dentro do Bitrix:
-1. Detectar o `member_id` do portal
-2. Encontrar ou vincular automaticamente o usuário anônimo à empresa correspondente
-3. Pular o passo "Criar Empresa" no wizard
+## Visao Geral
 
-## Diagnóstico do Problema
+Este plano detalha as melhorias necessarias para tornar o conector Api4Com + Bitrix24 completamente funcional, permitindo fazer e receber chamadas diretamente do Bitrix24.
 
-### Estado atual do banco de dados
-- **Empresa via instalação**: `Portal thoth24.bitrix24.com.br` (criada pelo `bitrix24-install`)
-  - `bitrix_member_id`: `2b292197955c1c2fc0f5561388afc284`
-  - **Problema**: Não tem nenhum membro (`company_members`) vinculado
-- **Empresa via formulário**: `Empresa Teste Bitrix` (criada manualmente)
-  - Tem membro com `user_id` anônimo
-  - **Problema**: Não tem `bitrix_member_id`
+## Estado Atual
 
-### Por que a criação manual falha
-O usuário atual no iframe do Bitrix tem um `user_id` diferente a cada sessão anônima. A edge function `create-company` cria uma empresa sem `bitrix_member_id`, então:
-- Na próxima sessão (novo `user_id` anônimo), não encontra o `company_member` antigo
-- O app mostra o wizard pedindo para criar empresa novamente
+### O que ja funciona:
+- Instalacao do app via Marketplace do Bitrix24 (bitrix24-install)
+- Vinculacao automatica de usuario/empresa via member_id (link-user-to-company)
+- Configuracao de credenciais Api4Com com webhook automatico (api4com-setup)
+- Click-to-Call via evento OnExternalCallStart (bitrix24-webhook)
+- Recebimento de webhooks de chamadas finalizadas (api4com-webhook)
 
-### Solução
-Usar o `auth.member_id` do Bitrix como identificador principal do tenant:
-1. Quando o app inicializa dentro do Bitrix, obtém o `member_id`
-2. Busca empresa pelo `bitrix_member_id` (não pelo `user_id`)
-3. Se encontrar, vincula o usuário anônimo atual como membro
-4. Se não encontrar, cria empresa automaticamente (instalação já faz isso)
+### O que precisa ser implementado:
+1. **Registro de linhas externas no Bitrix24** - As linhas telefonica precisam ser registradas no Bitrix para aparecerem nas configuracoes de telefonia
+2. **Popup de chamadas recebidas** - Quando uma chamada entra, mostrar o card no Bitrix para o usuario
+3. **Sincronizacao de mapeamentos de usuarios** - Buscar usuarios do Bitrix automaticamente
+4. **Simplificacao do wizard** - Remover etapas manuais que podem ser automatizadas
 
-## Plano de Implementação
+---
 
-### Fase 1: Auto-vinculação de usuário ao tenant Bitrix
+## Fase 1: Registro de Linhas Externas no Bitrix24
 
-**Edge Function `link-user-to-company`** (nova)
-- Recebe: `member_id` do Bitrix + token do usuário anônimo
-- Procura empresa com `bitrix_member_id = member_id`
-- Se existir e usuário não for membro, adiciona como membro
-- Retorna a empresa vinculada
+Quando uma linha telefonica e cadastrada no sistema, ela deve ser registrada no Bitrix24 usando `telephony.externalLine.add`.
 
-**BitrixContext.tsx** (atualizar)
-- Após obter `auth.member_id` do BX24:
-  - Chamar `link-user-to-company` passando o `member_id`
-  - Atualizar `companyId` no contexto automaticamente
-- Resultado: usuário já entra com empresa vinculada, sem precisar do wizard
+### Arquivos a modificar:
 
-### Fase 2: Simplificar o fluxo do Setup Wizard
+**supabase/functions/register-external-line/index.ts** (novo)
+- Recebe: line_number, line_name, company_id
+- Usa credenciais Bitrix da empresa para chamar telephony.externalLine.add
+- Registra a linha no Bitrix24
 
-**useCompany.ts** (atualizar)
-- `currentCompany`: Além de buscar por `company_members`, também buscar por `bitrix_member_id` se estiver dentro do Bitrix
+**src/hooks/usePhoneLines.ts** (atualizar)
+- Apos adicionar linha localmente, chamar edge function para registrar no Bitrix
 
-**SetupWizard.tsx** (atualizar)
-- Se `currentCompany` existir (via auto-vinculação), pular direto para credenciais
+**src/components/setup/steps/PhoneLinesSetup.tsx** (atualizar)
+- Mostrar status de sincronizacao com Bitrix
+- Adicionar botao para sincronizar linhas existentes
 
-**CompanySetup.tsx** (simplificar)
-- Se já houver empresa (via `bitrix_member_id`), mostrar apenas um card de confirmação
-- Remover o formulário de criação quando dentro do Bitrix
+---
 
-### Fase 3: Remover/ajustar botão de reset no header
+## Fase 2: Popup de Chamadas Recebidas
 
-**AppLayout.tsx** (atualizar)
-- Remover o botão de reset de sessão (ou esconder quando dentro do Bitrix)
-- Alternativa: Manter apenas para modo desenvolvimento
-- Motivo: Não faz sentido resetar sessão no Bitrix (causa confusão e quebra o fluxo)
+Quando uma chamada e recebida no softphone Api4Com, o sistema deve notificar o Bitrix24 para mostrar o popup do card de chamada.
 
-### Fase 4: Limpeza de dados (one-time)
-
-**Script de migração** (opcional)
-- Vincular empresas órfãs criadas manualmente ao `bitrix_member_id` correto
-- Remover empresas duplicadas sem uso
-
-## Arquivos a Modificar
-
-### Backend (Edge Functions)
-- `supabase/functions/link-user-to-company/index.ts` (novo)
-  - Recebe `member_id` e token
-  - Busca empresa pelo `bitrix_member_id`
-  - Adiciona usuário como membro se não existir
-  - Retorna empresa
-
-### Frontend
-- `src/contexts/BitrixContext.tsx`
-  - Chamar `link-user-to-company` após inicializar BX24
-  - Atualizar `companyId` automaticamente
-  
-- `src/hooks/useCompany.ts`
-  - Adicionar parâmetro opcional `memberId` para buscar empresa alternativa
-  - Priorizar busca por `bitrix_member_id` quando disponível
-
-- `src/components/setup/SetupWizard.tsx`
-  - Detectar se empresa já existe via Bitrix
-  - Pular passo de empresa automaticamente
-
-- `src/components/setup/steps/CompanySetup.tsx`
-  - Mostrar "Empresa vinculada" em vez de formulário quando via Bitrix
-
-- `src/components/layout/AppLayout.tsx`
-  - Remover/esconder botão de reset de sessão
-
-## Fluxo Final (como vai funcionar)
-
+### Fluxo:
 ```text
-+---------------------+
-|  Usuário abre app   |
-|  dentro do Bitrix   |
-+---------------------+
-          |
-          v
-+---------------------+
-|  BX24.init()        |
-|  Obtém member_id    |
-+---------------------+
-          |
-          v
-+---------------------+
-|  link-user-to-      |
-|  company (edge fn)  |
-+---------------------+
-          |
-    +-----+-----+
-    |           |
-    v           v
-+--------+  +--------+
-| Existe |  |  Não   |
-| empresa|  | existe |
-+--------+  +--------+
-    |           |
-    v           v
-+--------+  +--------+
-| Vincula|  | Mostra |
-| usuário|  | erro   |
-+--------+  +--------+
-    |
-    v
-+---------------------+
-|  Setup Wizard       |
-|  Pula para passo 2  |
-|  (Credenciais)      |
-+---------------------+
+Chamada recebida -> Api4Com Webhook (channel-create) 
+                 -> Buscar usuario por ramal
+                 -> telephony.externalcall.register (SHOW=1, TYPE=2)
+                 -> Popup aparece no Bitrix
+                 
+Chamada finalizada -> Api4Com Webhook (channel-hangup)
+                   -> telephony.externalcall.finish
+                   -> Card fechado + gravacao anexada
 ```
 
-## Critérios de Sucesso
+### Arquivos a modificar:
 
-1. Abrir app dentro do Bitrix: empresa aparece automaticamente vinculada
-2. Não mostra formulário de "Criar Empresa"
-3. Sem botão de "sair/reset" no header
-4. Recarregar página mantém empresa vinculada
-5. Múltiplos usuários do portal Bitrix veem mesma empresa
+**supabase/functions/api4com-webhook/index.ts** (atualizar)
+- Processar evento `channel-create` para chamadas recebidas
+- Chamar telephony.externalcall.register com SHOW=1
+- Armazenar bitrix_call_id para usar no finish
+- Processar evento `channel-answer` para atualizar status
 
-## Riscos e Mitigações
+**supabase/functions/api4com-setup/index.ts** (atualizar)
+- Configurar webhook para receber eventos: channel-create, channel-answer, channel-hangup
 
-- **Modo desenvolvimento** (fora do Bitrix): Manter comportamento atual de criar empresa manualmente
-- **Empresas órfãs**: Script de limpeza ou deixar usuário escolher se já existe empresa com mesmo `member_id`
+---
+
+## Fase 3: Auto-sincronizacao de Usuarios do Bitrix
+
+Buscar usuarios do Bitrix24 automaticamente para facilitar o mapeamento de ramais.
+
+### Arquivos:
+
+**supabase/functions/sync-bitrix-users/index.ts** (novo)
+- Chamar user.get no Bitrix para listar usuarios
+- Retornar lista de usuarios com ID, nome, departamento, telefone interno
+
+**src/hooks/useBitrixUsers.ts** (novo)
+- Hook para buscar e cachear usuarios do Bitrix
+- Usar para popular select no formulario de mapeamento
+
+**src/components/setup/steps/UserMappingSetup.tsx** (atualizar)
+- Substituir campo texto por select com usuarios do Bitrix
+- Mostrar nome do usuario selecionado
+- Auto-preencher se houver match de telefone interno
+
+---
+
+## Fase 4: Simplificacao do Setup Wizard
+
+Reduzir etapas manuais no wizard de configuracao.
+
+### Mudancas:
+
+**src/components/setup/SetupWizard.tsx**
+- Remover etapa de "Usuarios" se isInBitrix
+- Manter apenas: Credenciais -> Linhas
+
+**src/components/setup/steps/UserMappingSetup.tsx**
+- Mostrar apenas informacoes sobre como usar o Contact Center do Bitrix
+- Link para documentacao sobre mapeamento de usuarios no Contact Center
+
+**src/components/setup/steps/PhoneLinesSetup.tsx**
+- Tornar mais visual com feedback de sincronizacao
+
+---
+
+## Fase 5: Registro de Eventos de Telefonia
+
+Garantir que todos os eventos de telefonia do Bitrix estao registrados corretamente.
+
+### Arquivos:
+
+**supabase/functions/bitrix24-install/index.ts** (atualizar)
+- Alem de ONEXTERNALCALLSTART, registrar ONEXTERNALCALLBACKSTART
+- Verificar se eventos ja estao registrados antes de adicionar
+
+**supabase/functions/bitrix24-webhook/index.ts** (atualizar)
+- Processar evento ONEXTERNALCALLBACKSTART (callback request)
+- Melhorar logging para debug
+
+---
+
+## Fase 6: Dashboard e Monitoramento
+
+Melhorar visibilidade das chamadas e status do sistema.
+
+### Arquivos:
+
+**src/pages/Dashboard.tsx** (atualizar)
+- Mostrar ultimas chamadas em tempo real
+- Status das integracoes (Api4Com conectado, Bitrix conectado)
+- Metricas de chamadas
+
+**src/components/calls/RealtimeCallsWidget.tsx** (novo)
+- Widget que mostra chamadas ativas e recentes
+- Atualiza automaticamente via realtime do Supabase
+
+---
+
+## Detalhes Tecnicos
+
+### Endpoint telephony.externalcall.register
+
+Parametros para chamadas recebidas:
+```javascript
+{
+  USER_ID: "123",           // ID do usuario Bitrix
+  PHONE_NUMBER: "+55...",   // Numero que esta ligando
+  TYPE: 2,                  // 2 = incoming
+  CRM_CREATE: 1,            // Criar lead se nao existir
+  SHOW: 1,                  // Mostrar popup
+  LINE_NUMBER: "...",       // Linha externa cadastrada
+  CALL_START_DATE: "..."    // ISO8601
+}
+```
+
+Retorna:
+```javascript
+{
+  CALL_ID: "abc123",
+  CRM_ENTITY_TYPE: "LEAD",
+  CRM_ENTITY_ID: 456
+}
+```
+
+### Endpoint telephony.externalcall.finish
+
+```javascript
+{
+  CALL_ID: "abc123",
+  USER_ID: "123",
+  DURATION: 180,
+  STATUS_CODE: "200",       // 200=completed, 304=missed, 486=busy
+  RECORD_URL: "https://..."
+}
+```
+
+### Webhook Api4Com v1.4 - Tipos de Evento
+
+| Evento | Descricao | Uso |
+|--------|-----------|-----|
+| channel-create | Chamada iniciada | Mostrar popup |
+| channel-answer | Chamada atendida | Atualizar status |
+| channel-hangup | Chamada finalizada | Registrar no CRM |
+
+---
+
+## Limpeza e Correcoes
+
+### Dados orfaos no banco
+- A empresa "Thoth24 solution" (54401a1c) tem api4com_credentials configurado
+- A empresa "Portal thoth24..." (82e09b93) tem bitrix24_credentials configurado
+- Essas sao empresas diferentes que deveriam ser a mesma
+
+### Acao recomendada:
+1. Mover bitrix24_credentials para a empresa correta
+2. Ou vincular bitrix_member_id a empresa que tem api4com configurado
+
+---
+
+## Ordem de Implementacao
+
+1. **Fase 2** - Popup de chamadas recebidas (maior impacto)
+2. **Fase 1** - Registro de linhas externas
+3. **Fase 5** - Eventos de telefonia
+4. **Fase 4** - Simplificacao do wizard
+5. **Fase 3** - Auto-sincronizacao de usuarios
+6. **Fase 6** - Dashboard e monitoramento
+
+---
+
+## Resumo das Alteracoes
+
+| Arquivo | Acao | Prioridade |
+|---------|------|------------|
+| api4com-webhook/index.ts | Adicionar channel-create/answer | Alta |
+| api4com-setup/index.ts | Incluir mais tipos de webhook | Alta |
+| register-external-line/index.ts | Criar nova edge function | Media |
+| sync-bitrix-users/index.ts | Criar nova edge function | Baixa |
+| bitrix24-install/index.ts | Melhorar registro de eventos | Media |
+| UserMappingSetup.tsx | Simplificar/remover | Media |
+| PhoneLinesSetup.tsx | Adicionar sync com Bitrix | Media |
+| SetupWizard.tsx | Remover etapa desnecessaria | Baixa |
 
