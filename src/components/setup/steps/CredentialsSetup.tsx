@@ -24,8 +24,10 @@ interface CredentialsSetupProps {
 interface SetupResult {
   success: boolean;
   domain?: string;
+  extension?: string;
   webhook_configured?: boolean;
   webhook_url?: string;
+  user_mapping_created?: boolean;
   error?: string;
 }
 
@@ -34,7 +36,7 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
   const [setupResult, setSetupResult] = useState<SetupResult | null>(null);
   const { currentCompany } = useCompany();
   const { api4comCredentials, bitrix24Credentials, saveApi4comCredentials } = useCredentials(currentCompany?.id);
-  const { isInBitrix, auth } = useBitrix();
+  const { isInBitrix, auth, currentUser } = useBitrix();
 
   const api4comForm = useForm({
     resolver: zodResolver(api4comSchema),
@@ -61,10 +63,17 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
       await saveApi4comCredentials.mutateAsync(data.api_token);
 
       // Then call the setup edge function to configure the webhook
+      // Pass Bitrix user info for auto user mapping
+      const bitrixUserId = currentUser?.ID;
+      const userName = currentUser ? 
+        `${currentUser.NAME || ''} ${currentUser.LAST_NAME || ''}`.trim() : undefined;
+      
       const { data: result, error } = await supabase.functions.invoke('api4com-setup', {
         body: {
           company_id: currentCompany.id,
           api_token: data.api_token,
+          bitrix_user_id: bitrixUserId,
+          user_name: userName,
         },
       });
 
@@ -211,9 +220,11 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
                   <Wifi className="h-5 w-5 text-primary" />
                   <div>
                     <h4 className="font-medium text-sm">Webhook Configurado</h4>
-                    <p className="text-xs text-muted-foreground">
-                      {api4comCredentials.api4com_domain && `Domínio: ${api4comCredentials.api4com_domain}`}
-                    </p>
+                    {api4comCredentials.api4com_domain && (
+                      <p className="text-xs text-muted-foreground">
+                        Domínio: {api4comCredentials.api4com_domain}
+                      </p>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       Eventos de chamada serão recebidos automaticamente.
                     </p>
@@ -230,6 +241,27 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Extension Detected */}
+        {setupResult?.extension && (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 mt-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="h-5 w-5 text-primary" />
+              <div>
+                <h4 className="font-medium text-sm">Ramal Detectado: {setupResult.extension}</h4>
+                {setupResult.user_mapping_created ? (
+                  <p className="text-xs text-muted-foreground">
+                    Mapeamento automático criado para o usuário logado.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Domínio: {setupResult.domain}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
