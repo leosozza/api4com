@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.register-telephony-events]
 verify_jwt = false
+
+[functions.diagnose-telephony]
+verify_jwt = false

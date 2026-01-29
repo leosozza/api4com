@@ -138,11 +138,18 @@ Deno.serve(async (req) => {
     const domain = credentials.domain;
     const webhookUrl = `${SUPABASE_URL}/functions/v1/bitrix24-webhook`;
 
-    const results = {
+    const results: {
+      tokenRefreshed: boolean;
+      eventsRegistered: string[];
+      externalLineRegistered: boolean;
+      outgoingLineSet: boolean;
+      errors: string[];
+    } = {
       tokenRefreshed: true,
-      eventsRegistered: [] as string[],
+      eventsRegistered: [],
       externalLineRegistered: false,
-      errors: [] as string[],
+      outgoingLineSet: false,
+      errors: [],
     };
 
     // 4. Register ONEXTERNALCALLSTART event
@@ -234,7 +241,50 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 7. Verify registered events
+    // 7. Set outgoing line for user (CRITICAL for click-to-call)
+    if (phone_line_number) {
+      console.log("Setting outgoing line for click-to-call...");
+      try {
+        // First, get the line ID
+        const linesResponse = await fetch(
+          `https://${domain}/rest/telephony.externalLine.get?auth=${accessToken}`,
+          { method: "POST" }
+        );
+        const linesResult: BitrixApiResponse<Array<{ NUMBER: string; NAME: string }>> = await linesResponse.json();
+        
+        if (linesResult.result) {
+          const ourLine = linesResult.result.find(l => l.NUMBER === phone_line_number);
+          if (ourLine) {
+            console.log("Found our external line:", ourLine);
+            
+            // Set as outgoing line using voximplant.line.outgoing.set
+            const outgoingResponse = await fetch(
+              `https://${domain}/rest/voximplant.line.outgoing.set?auth=${accessToken}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  LINE_ID: phone_line_number,
+                }),
+              }
+            );
+            const outgoingResult = await outgoingResponse.json();
+            console.log("Outgoing line set result:", outgoingResult);
+            
+            if (!outgoingResult.error) {
+              results.outgoingLineSet = true;
+            } else {
+              results.errors.push(`Outgoing line: ${outgoingResult.error}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error setting outgoing line:", error);
+        results.errors.push(`Outgoing line: ${error}`);
+      }
+    }
+
+    // 8. Verify registered events
     console.log("Verifying registered events...");
     try {
       const eventsResponse = await fetch(
@@ -250,7 +300,7 @@ Deno.serve(async (req) => {
       console.error("Event verification failed:", error);
     }
 
-    const success = results.eventsRegistered.length > 0;
+    const success = results.eventsRegistered.length > 0 || (results.externalLineRegistered && (results as { outgoingLineSet?: boolean }).outgoingLineSet);
 
     console.log("=== Registration Complete ===");
     console.log("Results:", JSON.stringify(results, null, 2));
@@ -259,7 +309,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         success,
         message: success 
-          ? `Eventos registrados: ${results.eventsRegistered.join(", ")}` 
+          ? `Configuração completa! Eventos: ${results.eventsRegistered.join(", ") || "já registrados"}` 
           : "Falha ao registrar eventos",
         ...results,
       }),
