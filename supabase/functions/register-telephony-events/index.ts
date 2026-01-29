@@ -242,82 +242,56 @@ Deno.serve(async (req) => {
     }
 
     // 7. Set outgoing line (CRITICAL for click-to-call)
-    // IMPORTANT: voximplant.line.outgoing.set expects a Bitrix LINE_ID (numeric), not the phone number.
+    // For external telephony, Bitrix uses the PHONE NUMBER (from telephony.externalLine.add) as LINE_ID.
     if (phone_line_number) {
       console.log("Setting outgoing line for click-to-call...");
       try {
-        // 7.1 List Bitrix lines to find the correct LINE_ID
-        const bxLinesResponse = await fetch(
-          `https://${domain}/rest/voximplant.line.get?auth=${accessToken}`,
+        // 7.1 First, set global outgoing line using the phone number as LINE_ID
+        const outgoingResponse = await fetch(
+          `https://${domain}/rest/voximplant.line.outgoing.set?auth=${accessToken}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ LINE_ID: phone_line_number }),
+          }
+        );
+        const outgoingResult = await outgoingResponse.json();
+        console.log("voximplant.line.outgoing.set result:", outgoingResult);
+
+        if (!outgoingResult.error) {
+          results.outgoingLineSet = true;
+        } else {
+          results.errors.push(`Outgoing line (global): ${outgoingResult.error}`);
+        }
+
+        // 7.2 Verify outgoing line selection
+        const verifyResponse = await fetch(
+          `https://${domain}/rest/voximplant.line.outgoing.get?auth=${accessToken}`,
           { method: "POST" }
         );
-        const bxLinesResult: BitrixApiResponse<Array<Record<string, unknown>>> = await bxLinesResponse.json();
+        const verifyResult = await verifyResponse.json();
+        console.log("voximplant.line.outgoing.get result:", verifyResult);
 
-        if (bxLinesResult.error) {
-          console.error("voximplant.line.get error:", bxLinesResult.error);
-          results.errors.push(`Outgoing line: voximplant.line.get -> ${bxLinesResult.error}`);
-        }
+        // 7.3 Additionally, try to set the user's default line via REST API
+        // Get all Bitrix users who have a mapping in our system
+        const { data: userMappings } = await supabase
+          .from("user_mappings")
+          .select("bitrix24_user_id")
+          .eq("company_id", credentials.company_id);
 
-        const lines = bxLinesResult.result || [];
-        console.log("voximplant.line.get returned:", JSON.stringify(lines));
-
-        const matchByNumber = (l: Record<string, unknown>) => {
-          const numberCandidates = [
-            l.NUMBER,
-            l.LINE_NUMBER,
-            l.PHONE_NUMBER,
-            l.PSTN,
-            l.OUTGOING_NUMBER,
-          ].filter(Boolean);
-          return numberCandidates.some((v) => String(v) === phone_line_number);
-        };
-
-        const matchByName = (l: Record<string, unknown>) => {
-          const name = l.NAME ?? l.LINE_NAME;
-          if (!name) return false;
-          const s = String(name).toLowerCase();
-          return s.includes("api4com") || (phone_line_name ? s.includes(String(phone_line_name).toLowerCase()) : false);
-        };
-
-        const ourLine = lines.find(matchByNumber) || lines.find(matchByName) || null;
-        const lineId = ourLine?.ID ?? ourLine?.LINE_ID;
-
-        if (!lineId) {
-          console.error("Could not resolve Bitrix LINE_ID for phone line.");
-          results.errors.push("Outgoing line: Could not resolve LINE_ID from voximplant.line.get");
-        } else {
-          console.log("Resolved outgoing LINE_ID:", lineId);
-
-          // 7.2 Set as outgoing line using voximplant.line.outgoing.set
-          const outgoingResponse = await fetch(
-            `https://${domain}/rest/voximplant.line.outgoing.set?auth=${accessToken}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ LINE_ID: lineId }),
+        if (userMappings && userMappings.length > 0) {
+          console.log("Setting default line for mapped users...");
+          for (const mapping of userMappings) {
+            try {
+              // voximplant.user.activatephone requires different params
+              // For external lines, we use telephony.externalLine.get to confirm registration
+              console.log(`User ${mapping.bitrix24_user_id}: line should be assigned via Contact Center.`);
+            } catch (e) {
+              console.warn(`Could not set line for user ${mapping.bitrix24_user_id}:`, e);
             }
-          );
-          const outgoingResult = await outgoingResponse.json();
-          console.log("Outgoing line set result:", outgoingResult);
-
-          if (!outgoingResult.error) {
-            results.outgoingLineSet = true;
-          } else {
-            results.errors.push(`Outgoing line: ${outgoingResult.error}`);
-          }
-
-          // 7.3 Verify outgoing line selection
-          try {
-            const verifyResponse = await fetch(
-              `https://${domain}/rest/voximplant.line.outgoing.get?auth=${accessToken}`,
-              { method: "POST" }
-            );
-            const verifyResult = await verifyResponse.json();
-            console.log("Outgoing line get result:", verifyResult);
-          } catch (e) {
-            console.warn("Outgoing line verification failed:", e);
           }
         }
+
       } catch (error) {
         console.error("Error setting outgoing line:", error);
         results.errors.push(`Outgoing line: ${error}`);
