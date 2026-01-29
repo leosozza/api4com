@@ -1,149 +1,119 @@
 
-
-## Plano: Corrigir Erro "App is not found" no Bitrix24 Telephony
+## Plano: Corrigir Desalinhamento de Dados entre Empresas
 
 ### Diagnostico do Problema
 
-A mensagem **"App is not found"** indica que:
+O erro "Edge Function returned a non-2xx status code" ocorre porque:
 
-1. **Os eventos de telefonia nao estao registrados**: O Bitrix24 nao sabe para onde enviar os eventos `ONEXTERNALCALLSTART` quando voce clica em um numero de telefone
+| Recurso | Empresa | ID |
+|---------|---------|-----|
+| Credenciais Bitrix24 | Portal thoth24.bitrix24.com.br | `82e09b93-8617-4692-9365-dd87cc77c60b` |
+| Linha Telefonica | Thoth24 solution | `54401a1c-9d80-42d8-ad73-d29290999b32` |
+| User Mapping | Portal thoth24.bitrix24.com.br | `82e09b93-8617-4692-9365-dd87cc77c60b` |
 
-2. **Token OAuth expirado**: O `access_token` nas credenciais expirou em `2026-01-28 16:40:53` e precisa ser renovado via `refresh_token`
+Quando o usuario clica em "Registrar Eventos de Telefonia", o sistema:
+1. Usa o `currentCompany.id` (`54401a1c-9d80-42d8-ad73-d29290999b32`)
+2. A edge function busca credenciais Bitrix24 para essa empresa
+3. Nao encontra (retorno vazio) - as credenciais estao em outra empresa
+4. Retorna erro 404 "Bitrix24 credentials not found"
 
-3. **Linha externa nao registrada**: O Bitrix24 Contact Center precisa ter uma linha externa registrada via `telephony.externalLine.add` para que o app apareca nas opcoes de telefonia
+### Causas do Desalinhamento
 
-### Fluxo Atual vs Esperado
-
-```text
-ATUAL:
-Usuario clica no telefone no CRM
-    → Bitrix procura um handler para ONEXTERNALCALLSTART
-    → Nao encontra (evento nao registrado)
-    → Exibe "App is not found"
-
-ESPERADO:
-Usuario clica no telefone no CRM
-    → Bitrix dispara ONEXTERNALCALLSTART para o webhook registrado
-    → Edge function bitrix24-webhook recebe o evento
-    → Sistema busca mapeamento do usuario
-    → Origina chamada via Api4Com
-    → WebPhone toca
-```
+Existem **4 empresas de teste** no banco de dados criadas em momentos diferentes durante o desenvolvimento. O portal Bitrix24 `thoth24.bitrix24.com.br` foi instalado quando a empresa `82e09b93-...` existia, mas depois o usuario criou outra empresa `54401a1c-...` e cadastrou recursos nela.
 
 ### Solucao Proposta
 
-#### 1. Criar Edge Function para Registro Manual de Eventos
+#### Opcao A: Corrigir Dados no Banco (Recomendado para testes)
 
-Nova funcao `register-telephony-events` que:
-- Renova o token OAuth usando o refresh_token
-- Registra eventos `ONEXTERNALCALLSTART` e `ONEXTERNALCALLBACKSTART`
-- Registra linha externa no Contact Center via `telephony.externalLine.add`
+Migrar as credenciais Bitrix24 para a empresa que tem os recursos:
 
-**Endpoint**: `POST /functions/v1/register-telephony-events`
+```sql
+-- Mover credenciais Bitrix24 para a empresa Thoth24 solution
+UPDATE bitrix24_credentials 
+SET company_id = '54401a1c-9d80-42d8-ad73-d29290999b32'
+WHERE company_id = '82e09b93-8617-4692-9365-dd87cc77c60b';
 
-**Codigo**:
-```typescript
-// supabase/functions/register-telephony-events/index.ts
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-
-// 1. Buscar credenciais do Bitrix24 para a empresa
-// 2. Renovar access_token usando refresh_token
-// 3. Registrar evento ONEXTERNALCALLSTART
-// 4. Registrar evento ONEXTERNALCALLBACKSTART  
-// 5. Registrar linha externa (telephony.externalLine.add)
-// 6. Atualizar tokens no banco
+-- Mover user_mappings para a mesma empresa
+UPDATE user_mappings 
+SET company_id = '54401a1c-9d80-42d8-ad73-d29290999b32'
+WHERE company_id = '82e09b93-8617-4692-9365-dd87cc77c60b';
 ```
 
-#### 2. Adicionar Botao no Setup Wizard
+**Vantagem**: Solucao rapida para continuar testando
+**Desvantagem**: Nao resolve o problema estrutural
 
-Adicionar secao no `SetupWizard.tsx` ou pagina de Settings com:
-- Botao "Registrar Eventos de Telefonia"
-- Indicador de status (registrado/nao registrado)
-- Feedback visual do resultado
+#### Opcao B: Melhorar a Edge Function (Recomendado para producao)
 
-#### 3. Atualizar bitrix24-install para Tratamento de Erros
+Modificar a edge function `register-telephony-events` para buscar credenciais pelo `member_id` do Bitrix24 em vez do `company_id`:
 
-Melhorar o registro automatico durante instalacao:
-- Adicionar logs detalhados de sucesso/falha
-- Armazenar status do registro de eventos no banco
-- Permitir re-registro manual caso falhe
-
-### Arquivos a Criar/Modificar
-
-| Arquivo | Acao | Descricao |
-|---------|------|-----------|
-| `supabase/functions/register-telephony-events/index.ts` | CRIAR | Edge function para registro manual de eventos |
-| `supabase/config.toml` | MODIFICAR | Adicionar config da nova funcao |
-| `src/components/setup/steps/PhoneLinesSetup.tsx` | MODIFICAR | Adicionar botao de registro de eventos |
-| `src/hooks/useBitrix.ts` | MODIFICAR | Adicionar metodo para chamar a nova funcao |
-
-### Detalhes Tecnicos
-
-#### Renovacao de Token OAuth
-
-```typescript
-const refreshResponse = await fetch(`https://oauth.bitrix.info/oauth/token/`, {
-  method: "POST",
-  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  body: new URLSearchParams({
-    grant_type: "refresh_token",
-    client_id: BITRIX_CLIENT_ID,
-    client_secret: BITRIX_CLIENT_SECRET,
-    refresh_token: credentials.refresh_token,
-  }),
-});
+```text
+1. Receber company_id no request
+2. Buscar a linha telefonica da empresa
+3. Buscar QUALQUER credencial Bitrix24 que tenha o mesmo portal
+   (usando o member_id ou domain como chave)
+4. Usar essas credenciais para registrar os eventos
 ```
 
-#### Registro de Evento
+**Vantagem**: Mais resiliente a desalinhamentos
+**Desvantagem**: Requer mudanca na logica e pode causar confusao
+
+#### Opcao C: Limpar Dados e Reinstalar (Mais robusto)
+
+1. Deletar todas as empresas de teste
+2. Reinstalar o app no Bitrix24
+3. Sistema cria empresa correta automaticamente
+4. Recadastrar credenciais Api4Com e linhas
+
+### Recomendacao
+
+Para continuar os testes agora, executar a **Opcao A** (migracao de dados).
+
+Para producao, implementar validacoes que impecam a criacao de multiplas empresas para o mesmo portal Bitrix24.
+
+### Arquivos a Modificar (Opcao B)
+
+| Arquivo | Modificacao |
+|---------|-------------|
+| `supabase/functions/register-telephony-events/index.ts` | Buscar credenciais por `member_id` ou `domain` alem do `company_id` |
+| `src/components/setup/steps/PhoneLinesSetup.tsx` | Passar `member_id` ao chamar a funcao |
+
+### Detalhes Tecnicos (Opcao B)
 
 ```typescript
-await fetch(`https://${domain}/rest/event.bind`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    auth: access_token,
-    event: "ONEXTERNALCALLSTART",
-    handler: `${SUPABASE_URL}/functions/v1/bitrix24-webhook`,
-  }),
-});
+// Busca atual (falha se company_id estiver errado)
+const { data: credentials } = await supabase
+  .from("bitrix24_credentials")
+  .select("*")
+  .eq("company_id", company_id)
+  .single();
+
+// Busca melhorada (fallback por member_id)
+let credentials = null;
+
+// Primeira tentativa: por company_id
+const { data: byCompany } = await supabase
+  .from("bitrix24_credentials")
+  .select("*")
+  .eq("company_id", company_id)
+  .maybeSingle();
+
+if (byCompany) {
+  credentials = byCompany;
+} else {
+  // Fallback: buscar por member_id (se fornecido)
+  if (member_id) {
+    const { data: byMember } = await supabase
+      .from("bitrix24_credentials")
+      .select("*")
+      .eq("member_id", member_id)
+      .maybeSingle();
+    credentials = byMember;
+  }
+}
 ```
 
-#### Registro de Linha Externa
+### Proximos Passos
 
-```typescript
-await fetch(`https://${domain}/rest/telephony.externalLine.add`, {
-  method: "POST", 
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    auth: access_token,
-    NUMBER: phoneLineNumber, // ex: "+5511999999999"
-    NAME: "Api4Com",
-  }),
-});
-```
-
-### Segredos Necessarios
-
-A renovacao de tokens OAuth requer:
-- `BITRIX_CLIENT_ID`: ID do aplicativo no Marketplace
-- `BITRIX_CLIENT_SECRET`: Secret do aplicativo no Marketplace
-
-Estes precisam ser configurados como secrets no projeto.
-
-### Fluxo de Teste Apos Implementacao
-
-1. Acesse Configuracoes no app
-2. Clique em "Registrar Eventos de Telefonia"
-3. Aguarde confirmacao de sucesso
-4. Acesse Telefonia no Bitrix24
-5. Clique em um numero de telefone no CRM
-6. Verifique se o WebPhone recebe a chamada
-
-### Riscos e Mitigacoes
-
-| Risco | Mitigacao |
-|-------|-----------|
-| Token de refresh tambem expirou | Solicitar reinstalacao do app |
-| Permissoes insuficientes no app | Verificar escopos no Marketplace |
-| Rate limiting do Bitrix API | Adicionar retry com backoff |
-
+1. **Imediato**: Aprovar migracao de dados (Opcao A) para desbloquear testes
+2. **Curto prazo**: Implementar busca por fallback na edge function
+3. **Medio prazo**: Adicionar validacao para evitar empresas duplicadas por portal
