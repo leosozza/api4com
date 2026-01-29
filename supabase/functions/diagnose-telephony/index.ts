@@ -144,22 +144,38 @@ Deno.serve(async (req) => {
       results.checks = { ...results.checks as object, externalLinesError: String(e) };
     }
 
-    // 3. Get app info and permissions
-    console.log("Checking app info...");
+    // 3. Get app info and permissions - CRITICAL for detecting "App is not found" issue
+    console.log("Checking app info and installation status...");
     try {
       const appInfoResponse = await fetch(
         `https://${domain}/rest/app.info?auth=${accessToken}`,
         { method: "POST" }
       );
       const appInfoResult = await appInfoResponse.json();
+      
+      // Check if app is installed (INSTALLED field in app.info response)
+      // If INSTALLED is false or missing, events won't be dispatched
+      const appInfo = appInfoResult.result || null;
+      const isInstalled = appInfo?.INSTALLED === true || appInfo?.INSTALLED === "Y";
+      
+      console.log("App info result:", JSON.stringify(appInfo));
+      console.log("App INSTALLED status:", isInstalled);
+      
       results.checks = {
         ...results.checks as object,
-        appInfo: appInfoResult.result || null,
+        appInfo: appInfo,
         appInfoError: appInfoResult.error || null,
+        isAppInstalled: isInstalled,
+        installationStatus: isInstalled ? "INSTALLED" : "NOT_INSTALLED",
       };
     } catch (e) {
       console.error("Error checking app info:", e);
-      results.checks = { ...results.checks as object, appInfoError: String(e) };
+      results.checks = { 
+        ...results.checks as object, 
+        appInfoError: String(e),
+        isAppInstalled: false,
+        installationStatus: "ERROR",
+      };
     }
 
     // 4. Get current user info

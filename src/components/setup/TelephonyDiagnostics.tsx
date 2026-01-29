@@ -14,8 +14,10 @@ interface DiagnosticsResult {
     allEventsCount?: number;
     externalLines?: Array<{ NUMBER: string; NAME?: string }>;
     externalLinesError?: string;
-    appInfo?: { CODE: string; STATUS: string };
+    appInfo?: { CODE: string; STATUS: string; INSTALLED?: boolean | string };
     appInfoError?: string;
+    isAppInstalled?: boolean;
+    installationStatus?: string;
     currentUser?: { id: string; name: string; isAdmin: boolean };
     currentUserError?: string;
     voximplantOutgoingGet?: unknown;
@@ -122,6 +124,10 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
   const outgoingProvider = result?.checks?.voximplantOutgoingGet;
   const defaultLineNumber = result?.checks?.defaultLineNumber;
   const isOutgoingProviderCorrect = outgoingProvider === defaultLineNumber;
+  
+  // Check app installation status - CRITICAL for events to work
+  const isAppInstalled = result?.checks?.isAppInstalled ?? false;
+  const installationStatus = result?.checks?.installationStatus;
 
   return (
     <Card className="border-orange-200 bg-orange-50/50">
@@ -171,6 +177,10 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
 
             {/* Quick status badges */}
             <div className="flex flex-wrap gap-2">
+              <Badge variant={isAppInstalled ? "default" : "destructive"} className="gap-1">
+                {getStatusIcon(isAppInstalled)}
+                Instalação
+              </Badge>
               <Badge variant={hasCallEvents ? "default" : "destructive"} className="gap-1">
                 {getStatusIcon(!!hasCallEvents)}
                 Eventos
@@ -194,9 +204,23 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
             </div>
 
             {/* Issues summary */}
-            {!hasCallEvents && (
+            {!isAppInstalled && installationStatus && (
+              <div className="rounded-md bg-red-100 p-3 text-sm text-red-800">
+                <strong>CRÍTICO:</strong> O app NÃO está instalado corretamente no Bitrix24 (status: {installationStatus}). 
+                Eventos de telefonia estão bloqueados. <br/>
+                <strong>Solução:</strong> Desinstale e reinstale o app no Bitrix24 usando as URLs corretas do Partner Portal.
+              </div>
+            )}
+
+            {!hasCallEvents && isAppInstalled && (
               <div className="rounded-md bg-red-100 p-3 text-sm text-red-800">
                 <strong>Problema:</strong> Eventos de telefonia não registrados. Clique em "Reparar Eventos" para corrigir.
+              </div>
+            )}
+            
+            {!hasCallEvents && !isAppInstalled && (
+              <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
+                <strong>Aviso:</strong> Os eventos de telefonia não funcionarão até que o app seja instalado corretamente.
               </div>
             )}
 
