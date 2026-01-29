@@ -9,6 +9,9 @@ verify_jwt = false
 [functions.bitrix24-install]
 verify_jwt = false
 
+[functions.bitrix24-handler]
+verify_jwt = false
+
 [functions.test-connection]
 verify_jwt = false
 

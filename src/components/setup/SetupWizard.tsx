@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { CompanySetup } from './steps/CompanySetup';
 import { CredentialsSetup } from './steps/CredentialsSetup';
 import { PhoneLinesSetup } from './steps/PhoneLinesSetup';
+import { TelephonyDiagnostics } from './TelephonyDiagnostics';
 import { useCompany } from '@/hooks/useCompany';
 import { useCredentials } from '@/hooks/useCredentials';
 import { usePhoneLines } from '@/hooks/usePhoneLines';
@@ -70,35 +71,42 @@ export function SetupWizard() {
 
   if (isSetupComplete) {
     return (
-      <Card className="mx-auto max-w-2xl">
-        <CardHeader className="text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-            <Check className="h-8 w-8 text-primary" />
-          </div>
-          <CardTitle className="text-2xl">Configuração Completa!</CardTitle>
-          <CardDescription>
-            Sua integração Api4Com + Bitrix24 está pronta para uso.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4 text-center">
-          <p className="text-sm text-muted-foreground">
-            Para mapear usuários aos ramais, utilize o Contact Center do Bitrix24.
-          </p>
-          <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
-            <Button onClick={() => window.location.href = '/dashboard'}>
-              Ir para Dashboard
-              <ChevronRight className="ml-2 h-4 w-4" />
-            </Button>
-            <Button 
-              variant="outline"
-              onClick={() => window.open('https://chromewebstore.google.com/detail/api4com-extens%C3%A3o-para-nav/nmihkcakhpccmdhoifppbgeoapjaanno', '_blank')}
-            >
-              Extensão Chrome
-              <ExternalLink className="ml-2 h-4 w-4" />
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="mx-auto max-w-2xl space-y-6">
+        <Card>
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+              <Check className="h-8 w-8 text-primary" />
+            </div>
+            <CardTitle className="text-2xl">Configuração Completa!</CardTitle>
+            <CardDescription>
+              Sua integração Api4Com + Bitrix24 está pronta para uso.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 text-center">
+            <p className="text-sm text-muted-foreground">
+              Para mapear usuários aos ramais, utilize o Contact Center do Bitrix24.
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
+              <Button onClick={() => window.location.href = '/dashboard'}>
+                Ir para Dashboard
+                <ChevronRight className="ml-2 h-4 w-4" />
+              </Button>
+              <Button 
+                variant="outline"
+                onClick={() => window.open('https://chromewebstore.google.com/detail/api4com-extens%C3%A3o-para-nav/nmihkcakhpccmdhoifppbgeoapjaanno', '_blank')}
+              >
+                Extensão Chrome
+                <ExternalLink className="ml-2 h-4 w-4" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+        
+        {/* Telephony Diagnostics */}
+        {effectiveCompany?.id && (
+          <TelephonyDiagnostics companyId={effectiveCompany.id} />
+        )}
+      </div>
     );
   }
 
