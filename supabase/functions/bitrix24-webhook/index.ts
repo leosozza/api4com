@@ -20,9 +20,21 @@ interface BitrixCallEvent {
 }
 
 Deno.serve(async (req) => {
+  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
+
+  // Handle HEAD requests (Bitrix24 uses these for endpoint validation)
+  if (req.method === "HEAD") {
+    console.log("HEAD request received - returning OK for Bitrix24 validation");
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  console.log("=== Bitrix24 Webhook ===");
+  console.log("Method:", req.method);
+  console.log("URL:", req.url);
+  console.log("Headers:", Object.fromEntries(req.headers.entries()));
 
   try {
     // Bitrix sends form-urlencoded data
