@@ -113,9 +113,20 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
         });
       }
       if (result.errors > 0) {
+        // Show detailed error message
+        const errorMessage = result.errorDetails && result.errorDetails.length > 0
+          ? result.errorDetails.join('; ')
+          : `${result.errors} linha(s) falharam ao sincronizar.`;
+        
+        // Check if it's a credentials issue
+        const isCredentialError = errorMessage.toLowerCase().includes('credentials not found') || 
+                                   errorMessage.toLowerCase().includes('bitrix24 credentials');
+        
         toast({ 
           title: 'Sincronização parcial',
-          description: `${result.errors} linha(s) falharam ao sincronizar.`,
+          description: isCredentialError 
+            ? 'Credenciais do Bitrix24 não encontradas. Certifique-se de que o app foi instalado via Marketplace do Bitrix24.'
+            : errorMessage,
           variant: 'destructive'
         });
       }
