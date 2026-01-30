@@ -131,11 +131,16 @@ Deno.serve(async (req) => {
       `https://${domain}/rest/voximplant.line.get?auth=${accessToken}`,
       { method: "POST" }
     );
-    const linesResult: BitrixApiResponse<Array<Record<string, unknown>>> = await linesResponse.json();
+    const linesResult: BitrixApiResponse<Array<Record<string, unknown>> | Record<string, unknown>> = await linesResponse.json();
     console.log("Available lines:", JSON.stringify(linesResult.result, null, 2));
 
+    // Ensure result is an array
+    const linesArray = Array.isArray(linesResult.result) 
+      ? linesResult.result 
+      : (linesResult.result ? [linesResult.result] : []);
+
     // Find our line - check multiple possible fields
-    const ourLine = linesResult.result?.find((line) => {
+    const ourLine = linesArray.find((line) => {
       const candidates = [
         line.NUMBER,
         line.LINE_NUMBER,
