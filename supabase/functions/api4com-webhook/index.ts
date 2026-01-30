@@ -300,23 +300,52 @@ async function handleCallHangup(
   const callStatus = getCallStatus(body);
   console.log("Call status:", callStatus);
 
-  // Update or create call log
-  const { data: existingCall } = await supabase
+  // Update or create call log - try by api4com_call_id first, then by bitrix_call_id
+  let existingCall: { id: string; bitrix_call_id: string | null; api4com_call_id: string | null } | null = null;
+  
+  const { data: callByApi4comId } = await supabase
     .from("call_logs")
-    .select("id, bitrix_call_id")
+    .select("id, bitrix_call_id, api4com_call_id")
+    .eq("company_id", companyId)
     .eq("api4com_call_id", body.id)
     .maybeSingle();
 
+  existingCall = callByApi4comId;
+
+  // If not found by api4com_call_id, try by bitrix_call_id from metadata
+  if (!existingCall && body.metadata?.bitrixCallId) {
+    console.log("Searching by bitrix_call_id:", body.metadata.bitrixCallId);
+    const { data: callByBitrixId } = await supabase
+      .from("call_logs")
+      .select("id, bitrix_call_id, api4com_call_id")
+      .eq("company_id", companyId)
+      .eq("bitrix_call_id", body.metadata.bitrixCallId)
+      .maybeSingle();
+    
+    existingCall = callByBitrixId;
+    if (existingCall) {
+      console.log("Found call by bitrix_call_id:", existingCall.id);
+    }
+  }
+
   if (existingCall) {
-    // Update existing call
+    // Build update data
+    const updateData: Record<string, unknown> = {
+      status: callStatus,
+      duration_seconds: body.duration || 0,
+      recording_url: body.recordUrl || null,
+      call_ended_at: body.endedAt,
+    };
+    
+    // If found by bitrix_call_id but missing api4com_call_id, update it for consistency
+    if (!existingCall.api4com_call_id) {
+      updateData.api4com_call_id = body.id;
+      console.log("Updating api4com_call_id to:", body.id);
+    }
+
     const { error: updateError } = await supabase
       .from("call_logs")
-      .update({
-        status: callStatus,
-        duration_seconds: body.duration || 0,
-        recording_url: body.recordUrl || null,
-        call_ended_at: body.endedAt,
-      })
+      .update(updateData)
       .eq("id", existingCall.id);
 
     if (updateError) {
@@ -325,10 +354,11 @@ async function handleCallHangup(
       console.log("Call log updated:", existingCall.id);
     }
 
-    // Finish call in Bitrix24
-    if (userMapping?.bitrix24_user_id) {
+    // Finish call in Bitrix24 using the ORIGINAL bitrix_call_id (no new registration)
+    if (userMapping?.bitrix24_user_id && existingCall.bitrix_call_id) {
+      console.log("Finishing call with original bitrix_call_id:", existingCall.bitrix_call_id);
       await finishBitrix24Call(supabase, companyId, {
-        call_id: existingCall.bitrix_call_id || body.metadata?.bitrixCallId || body.id,
+        call_id: existingCall.bitrix_call_id,
         user_id: userMapping.bitrix24_user_id,
         duration: body.duration || 0,
         status_code: getBitrixStatusCode(callStatus),
@@ -362,16 +392,16 @@ async function handleCallHangup(
       console.log("Call log created:", newCall?.id);
     }
 
-    // Register and finish call in Bitrix24
-    if (userMapping?.bitrix24_user_id) {
-      // For outbound calls not captured by channel-create, register then finish
+    // Register and finish call in Bitrix24 only if no bitrix_call_id exists
+    if (userMapping?.bitrix24_user_id && !body.metadata?.bitrixCallId) {
+      // For calls without a bitrix_call_id, register then finish (creates new CRM activity)
       const bitrixCallId = await registerBitrix24Call(supabase, companyId, {
         user_id: userMapping.bitrix24_user_id,
         phone_number: phoneNumber,
         direction: body.direction,
         line_number: phoneLine?.line_number,
         call_start_date: body.startedAt,
-        show: false, // Don't show popup for completed calls
+        show: false,
         crm_create: true,
       });
 
@@ -384,6 +414,16 @@ async function handleCallHangup(
           recording_url: body.recordUrl,
         });
       }
+    } else if (userMapping?.bitrix24_user_id && body.metadata?.bitrixCallId) {
+      // Has bitrix_call_id but no existing record - finish with the metadata call_id
+      console.log("Finishing orphan call with metadata bitrix_call_id:", body.metadata.bitrixCallId);
+      await finishBitrix24Call(supabase, companyId, {
+        call_id: body.metadata.bitrixCallId,
+        user_id: userMapping.bitrix24_user_id,
+        duration: body.duration || 0,
+        status_code: getBitrixStatusCode(callStatus),
+        recording_url: body.recordUrl,
+      });
     }
   }
 }
