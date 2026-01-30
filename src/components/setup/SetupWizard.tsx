@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Check, Building2, Key, Phone, ChevronRight, ExternalLink } from 'lucide-react';
+import { Check, Building2, Key, Phone, ChevronRight, ExternalLink, Settings, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { CompanySetup } from './steps/CompanySetup';
 import { CredentialsSetup } from './steps/CredentialsSetup';
@@ -69,6 +70,9 @@ export function SetupWizard() {
     }
   };
 
+  const [showCredentialsEdit, setShowCredentialsEdit] = useState(false);
+  const [showLinesEdit, setShowLinesEdit] = useState(false);
+
   if (isSetupComplete) {
     return (
       <div className="mx-auto max-w-2xl space-y-6">
@@ -99,6 +103,62 @@ export function SetupWizard() {
                 <ExternalLink className="ml-2 h-4 w-4" />
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Editable Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Settings className="h-5 w-5" />
+              Gerenciar Configurações
+            </CardTitle>
+            <CardDescription>
+              Edite suas credenciais e configurações de telefonia
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Api4Com Credentials */}
+            <Collapsible open={showCredentialsEdit} onOpenChange={setShowCredentialsEdit}>
+              <CollapsibleTrigger asChild>
+                <Button variant="outline" className="w-full justify-between">
+                  <div className="flex items-center gap-2">
+                    <Key className="h-4 w-4" />
+                    Credenciais Api4Com
+                    {api4comCredentials && <Check className="h-4 w-4 text-primary" />}
+                  </div>
+                  {showCredentialsEdit ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-4">
+                <CredentialsSetup onComplete={() => setShowCredentialsEdit(false)} />
+              </CollapsibleContent>
+            </Collapsible>
+
+            {/* Phone Lines */}
+            <Collapsible open={showLinesEdit} onOpenChange={setShowLinesEdit}>
+              <CollapsibleTrigger asChild>
+                <Button variant="outline" className="w-full justify-between">
+                  <div className="flex items-center gap-2">
+                    <Phone className="h-4 w-4" />
+                    Linhas Telefônicas
+                    {phoneLines.length > 0 && <Check className="h-4 w-4 text-primary" />}
+                  </div>
+                  {showLinesEdit ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-4">
+                <PhoneLinesSetup onComplete={() => setShowLinesEdit(false)} />
+              </CollapsibleContent>
+            </Collapsible>
           </CardContent>
         </Card>
         
