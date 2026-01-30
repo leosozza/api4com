@@ -170,15 +170,28 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
   const outgoingProvider = result?.checks?.voximplantOutgoingGet;
   const defaultLineNumber = result?.checks?.defaultLineNumber;
   
+  // Get any configured phone line from our database for comparison
+  const anyConfiguredLine = result?.phoneLines?.[0]?.line_number;
+  const lineToCheck = defaultLineNumber || anyConfiguredLine;
+  
   // Check if global outgoing is set to our external line (critical for click-to-call)
   const isGlobalOutgoingApi4Com = (() => {
-    if (!outgoingProvider || !defaultLineNumber) return false;
+    if (!outgoingProvider) return false;
     const providerStr = String(outgoingProvider);
-    // Check if the global outgoing contains our line number
-    return providerStr.includes(defaultLineNumber) || 
-           providerStr === defaultLineNumber ||
-           // Also check for "rest_" prefix which indicates REST app line
-           providerStr.startsWith('rest_');
+    
+    // If we have a configured line, check if it matches
+    if (lineToCheck) {
+      return providerStr.includes(lineToCheck) || 
+             providerStr === lineToCheck ||
+             // Also check for "rest_" prefix which indicates REST app line
+             providerStr.startsWith('rest_');
+    }
+    
+    // If no line configured locally but Bitrix has an external line, check if outgoing matches any external line
+    const externalLines = result?.checks?.externalLines || [];
+    return externalLines.some(l => 
+      providerStr.includes(l.NUMBER) || providerStr === l.NUMBER
+    );
   })();
   
   // Check user-level default line
@@ -357,7 +370,7 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
                       <li>Vá em <strong>CRM → Vendas → Canais de Vendas → Telefonia</strong></li>
                       <li>Clique em <strong>Configurar telefonia</strong></li>
                       <li>Selecione <strong>Configurações de Telefonia</strong> (Telephony Settings)</li>
-                      <li>No campo <strong>"Número padrão para chamadas efetuadas"</strong>, selecione <strong>"Api4Com: {defaultLineNumber}"</strong></li>
+                      <li>No campo <strong>"Número padrão para chamadas efetuadas"</strong>, selecione <strong>"Api4Com: {lineToCheck || '(sua linha)'}"</strong></li>
                       <li>Salve as alterações</li>
                     </ol>
                   </div>
@@ -372,7 +385,7 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
             {/* Warning when global is not set but user might be */}
             {!isGlobalOutgoingApi4Com && !isGlobalConfigIssue && result && (
               <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
-                <strong>Aviso:</strong> Provedor de saída global está configurado como "{String(outgoingProvider || 'não definido')}" em vez de "{defaultLineNumber}".
+                <strong>Aviso:</strong> Provedor de saída global está configurado como "{String(outgoingProvider || 'não definido')}" em vez de "{lineToCheck || '(linha não configurada)'}".
               </div>
             )}
 
