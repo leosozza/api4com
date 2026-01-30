@@ -1,81 +1,148 @@
 
-# Plano: Corrigir Click-to-Call para Usar Conector Api4Com (PBX)
+# Plano: Corrigir Vinculação de Chamadas ao Deal Correto
 
 ## Problema Identificado
 
-O evento `ONEXTERNALCALLSTART` **não está sendo disparado** porque, segundo a documentação oficial do Bitrix24:
+Quando você clica em um telefone no Deal 90, o Bitrix24 envia um `CALL_ID` único (`externalCall.bc2f40df...`). Porém, quando a chamada termina:
 
-> "To ensure the event is triggered, go to **Telephony > Telephony Settings** and select your application in the **Default outgoing call number** field."
+1. O `bitrix24-webhook` salva o `api4com_call_id` retornado pelo dialer
+2. O `api4com-webhook` recebe um ID **diferente** no evento `channel-hangup`
+3. Como os IDs não correspondem, o sistema não encontra o registro existente
+4. Ele cria um **novo registro** no Bitrix24 com `CRM_CREATE=1`, gerando o Deal 94
 
-O usuário configurou corretamente o "Número para chamadas efetuadas" **no perfil do usuário** (Telephony Users), mas **não configurou o número padrão GLOBAL** nas Configurações de Telefonia.
-
-O Bitrix24 prioriza a telefonia nativa (WebRTC/Voximplant) quando não detecta que uma aplicação externa é o **provedor padrão global** de saída.
-
----
+```text
++------------------+     +------------------+     +------------------+
+| Bitrix24 Deal 90 |     | bitrix24-webhook |     | api4com-webhook  |
++------------------+     +------------------+     +------------------+
+        |                        |                        |
+        | CALL_ID: bc2f40df...   |                        |
+        |----------------------->|                        |
+        |                        | api4com_id: d7156dca...|
+        |                        |----------------------->|
+        |                        |                        |
+        |                        |      hangup id: 190678fc...
+        |                        |<-----------------------|
+        |                        |   (IDs NÃO BATEM!)     |
+        |                        |                        |
+        |   CRM_CREATE=1 → Deal 94 criado!               |
+        |<-----------------------------------------------|
+```
 
 ## Solução
 
-### 1. Configuração Manual no Bitrix24 (Prioridade)
-
-**Passo 1: Definir Número Padrão Global**
-1. Ir em **CRM > Vendas > Canais de Vendas > Telefonia**
-2. Clicar em **Configurar telefonia**
-3. Selecionar **Configurações de Telefonia** (Telephony Settings)
-4. No campo **"Número padrão para chamadas efetuadas"**, selecionar **"Api4Com: +5515996045202"**
-5. Salvar
-
-**Passo 2: Verificar Configuração do Usuário** (Já feito)
-1. Na mesma área, ir em **Usuários de Telefonia**
-2. O usuário Leonardo já está com "Api4Com" selecionado
-
-**Passo 3: Testar**
-- Abrir um Lead/Contato no CRM
-- Clicar no número de telefone
-- Se funcionou: o webhook `bitrix24-webhook` vai receber o evento
-- Se não funcionou: O Bitrix ainda vai discar nativamente
+Usar o `bitrix_call_id` (do metadata) como chave de busca secundária, além do `api4com_call_id`.
 
 ---
 
-### 2. Melhorias na UI de Diagnóstico
+## Alterações Técnicas
 
-Criar alertas mais claros no painel de diagnóstico (`TelephonyDiagnostics.tsx`) para identificar automaticamente este problema.
+### 1. Modificar `api4com-webhook/index.ts`
 
-**Verificações a adicionar:**
-- Detectar se `voximplant.line.outgoing.get` retorna a linha Api4Com
-- Comparar linha global vs linha do usuário
-- Exibir alerta específico quando global != Api4Com
+**Função `handleCallHangup`** (linhas ~303-310):
 
-**Arquivos a modificar:**
-- `src/components/setup/TelephonyDiagnostics.tsx`: Adicionar seção "Configuração de Saída Global"
-
----
-
-### 3. Checklist para PBX/Conector REST
-
-O usuário perguntou "como configurar como PBX". No Bitrix24 com REST connector:
-
-| Configuração | Local | Valor |
-|--------------|-------|-------|
-| Número padrão global | Telefonia > Configurações | Api4Com: +55... |
-| Número do usuário | Telefonia > Usuários | Api4Com: +55... |
-| Telefone SIP | Telefonia > Usuários | "Não conectado" |
-| Eventos registrados | (Via API) | ONEXTERNALCALLSTART |
-| Linha externa | (Via API) | +5515996045202 |
-
----
-
-## Resumo Técnico
-
-O fluxo correto de click-to-call com conector REST:
-
-```text
-1. Usuário clica no telefone no CRM
-2. Bitrix verifica "Número padrão para chamadas efetuadas"
-   - Se = Aplicação REST: dispara evento ONEXTERNALCALLSTART para o webhook
-   - Se = Telefonia nativa: ignora webhook e disca via WebRTC/Voximplant
-3. Webhook recebe evento
-4. Webhook chama Api4Com para originar chamada
-5. PBX conecta ramal + destino
+Atualmente busca apenas por `api4com_call_id`:
+```typescript
+const { data: existingCall } = await supabase
+  .from("call_logs")
+  .select("id, bitrix_call_id")
+  .eq("api4com_call_id", body.id)  // ← Apenas este critério
+  .maybeSingle();
 ```
 
-O problema atual está no passo 2: O Bitrix está usando telefonia nativa porque o **número padrão global** não está configurado para a aplicação Api4Com.
+**Correção - buscar também pelo `bitrix_call_id` do metadata:**
+```typescript
+// Primeiro tenta pelo api4com_call_id
+let existingCall = null;
+const { data: callByApi4comId } = await supabase
+  .from("call_logs")
+  .select("id, bitrix_call_id, api4com_call_id")
+  .eq("company_id", companyId)
+  .eq("api4com_call_id", body.id)
+  .maybeSingle();
+
+existingCall = callByApi4comId;
+
+// Se não encontrou, tenta pelo bitrix_call_id do metadata
+if (!existingCall && body.metadata?.bitrixCallId) {
+  console.log("Searching by bitrix_call_id:", body.metadata.bitrixCallId);
+  const { data: callByBitrixId } = await supabase
+    .from("call_logs")
+    .select("id, bitrix_call_id, api4com_call_id")
+    .eq("company_id", companyId)
+    .eq("bitrix_call_id", body.metadata.bitrixCallId)
+    .maybeSingle();
+  
+  existingCall = callByBitrixId;
+}
+```
+
+### 2. Atualizar o `api4com_call_id` quando encontrado pelo Bitrix ID
+
+Quando encontrar pelo `bitrix_call_id`, atualizar o `api4com_call_id` para ter consistência:
+
+```typescript
+if (existingCall) {
+  // Atualiza o api4com_call_id se encontrou pelo bitrix_call_id
+  const updateData: Record<string, unknown> = {
+    status: callStatus,
+    duration_seconds: body.duration || 0,
+    recording_url: body.recordUrl || null,
+    call_ended_at: body.endedAt,
+  };
+  
+  // Se encontrou pelo bitrix_call_id, atualiza o api4com_call_id
+  if (!existingCall.api4com_call_id) {
+    updateData.api4com_call_id = body.id;
+  }
+  
+  await supabase
+    .from("call_logs")
+    .update(updateData)
+    .eq("id", existingCall.id);
+}
+```
+
+### 3. Usar o `bitrix_call_id` existente no finish (NÃO chamar register)
+
+Quando encontrar um registro existente, usar o `bitrix_call_id` original para chamar `telephony.externalcall.finish` **sem criar novo registro**:
+
+```typescript
+// Finish call in Bitrix24 usando o CALL_ID original
+if (userMapping?.bitrix24_user_id && existingCall.bitrix_call_id) {
+  await finishBitrix24Call(supabase, companyId, {
+    call_id: existingCall.bitrix_call_id,  // ← ID original do Bitrix
+    user_id: userMapping.bitrix24_user_id,
+    duration: body.duration || 0,
+    status_code: getBitrixStatusCode(callStatus),
+    recording_url: body.recordUrl,
+  });
+}
+```
+
+---
+
+## Resultado Esperado
+
+Após a correção:
+
+1. Click-to-call no Deal 90 → Bitrix envia `CALL_ID: bc2f40df...`
+2. `bitrix24-webhook` salva com `bitrix_call_id: bc2f40df...`
+3. `api4com-webhook` recebe hangup → Busca por `bitrix_call_id` → **ENCONTRA!**
+4. Chama `telephony.externalcall.finish` com o `CALL_ID` original
+5. Gravação e informações aparecem no **Deal 90** (não cria novo Deal)
+
+---
+
+## Arquivos a Modificar
+
+| Arquivo | Alteração |
+|---------|-----------|
+| `supabase/functions/api4com-webhook/index.ts` | Adicionar busca secundária por `bitrix_call_id` e evitar `CRM_CREATE` duplicado |
+
+---
+
+## Benefícios
+
+- Chamadas iniciadas pelo click-to-call serão corretamente vinculadas ao Deal de origem
+- Gravações e métricas aparecerão no histórico correto
+- Não haverá criação de Deals duplicados
