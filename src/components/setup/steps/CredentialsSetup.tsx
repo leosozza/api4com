@@ -93,18 +93,39 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
         },
       });
 
+      console.log('api4com-setup response:', { result, error });
+
+      // Check for errors - can come from 'error' object or from result with error property
       if (error) {
-        console.error('Setup error:', error);
+        console.error('Setup error (from error object):', error);
+        // Try to extract more details from the error
+        const errorMessage = error.message || 'Erro na configuração';
+        const errorDetails = typeof error === 'object' ? JSON.stringify(error) : undefined;
+        
         setSetupResult({
           success: false,
-          error: error.message,
+          error: errorMessage,
+          details: errorDetails,
         });
         toast({
-          title: 'Aviso',
-          description: 'Credenciais salvas, mas houve um erro na configuração automática do webhook.',
+          title: 'Erro na configuração',
+          description: errorMessage,
           variant: 'destructive',
         });
-      } else {
+      } else if (result?.error) {
+        // Error returned in the response body
+        console.error('Setup error (from result):', result);
+        setSetupResult({
+          success: false,
+          error: result.error,
+          details: result.details,
+        });
+        toast({
+          title: 'Erro na configuração',
+          description: result.error,
+          variant: 'destructive',
+        });
+      } else if (result?.success) {
         setSetupResult(result as SetupResult);
         if (result?.webhook_configured) {
           toast({ 
@@ -117,6 +138,14 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
             description: 'Credenciais salvas. O webhook precisará ser configurado manualmente.',
           });
         }
+      } else {
+        // Unexpected response format
+        console.warn('Unexpected response format:', result);
+        setSetupResult(result as SetupResult);
+        toast({ 
+          title: 'Token salvo',
+          description: 'Verifique o status da configuração abaixo.',
+        });
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Erro desconhecido';
