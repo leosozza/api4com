@@ -1,148 +1,74 @@
 
-# Plano: Corrigir Vinculação de Chamadas ao Deal Correto
+
+# Plano: Exibir URL do Webhook para Configuração Manual
+
+## Contexto
+
+O sistema já tenta configurar o webhook automaticamente via API da Api4Com quando o token é salvo. Porém, quando essa configuração falha (ou o usuário quer configurar manualmente), a URL do webhook não é exibida para cópia.
 
 ## Problema Identificado
 
-Quando você clica em um telefone no Deal 90, o Bitrix24 envia um `CALL_ID` único (`externalCall.bc2f40df...`). Porém, quando a chamada termina:
+- A edge function `api4com-setup` retorna `webhook_url` na resposta
+- A UI não exibe essa URL para o usuário copiar
+- Quando `webhook_configured: false`, não há instruções claras de configuração manual
 
-1. O `bitrix24-webhook` salva o `api4com_call_id` retornado pelo dialer
-2. O `api4com-webhook` recebe um ID **diferente** no evento `channel-hangup`
-3. Como os IDs não correspondem, o sistema não encontra o registro existente
-4. Ele cria um **novo registro** no Bitrix24 com `CRM_CREATE=1`, gerando o Deal 94
+## Solução Proposta
+
+### 1. Atualizar `CredentialsSetup.tsx`
+
+Modificar o componente para:
+
+1. **Sempre mostrar a URL do webhook** após configurar o token (seja automático ou manual)
+2. **Adicionar botão "Copiar"** para facilitar cópia da URL
+3. **Exibir instruções claras** quando a configuração automática falhar
+
+### Mudanças no Componente
 
 ```text
-+------------------+     +------------------+     +------------------+
-| Bitrix24 Deal 90 |     | bitrix24-webhook |     | api4com-webhook  |
-+------------------+     +------------------+     +------------------+
-        |                        |                        |
-        | CALL_ID: bc2f40df...   |                        |
-        |----------------------->|                        |
-        |                        | api4com_id: d7156dca...|
-        |                        |----------------------->|
-        |                        |                        |
-        |                        |      hangup id: 190678fc...
-        |                        |<-----------------------|
-        |                        |   (IDs NÃO BATEM!)     |
-        |                        |                        |
-        |   CRM_CREATE=1 → Deal 94 criado!               |
-        |<-----------------------------------------------|
+┌────────────────────────────────────────────────────────┐
+│  Webhook                                               │
+│  ──────────────────────────────────────────────────── │
+│  ✓ Configurado automaticamente                        │ (se sucesso)
+│  ─ OU ─                                               │
+│  ⚠ Configuração automática falhou                     │ (se falha)
+│                                                        │
+│  URL do Webhook:                                       │
+│  ┌──────────────────────────────────────┬────────┐   │
+│  │ https://xdyum...com-webhook          │ Copiar │   │
+│  └──────────────────────────────────────┴────────┘   │
+│                                                        │
+│  ▼ Como configurar manualmente:                       │
+│    1. Acesse app.api4com.com                          │
+│    2. Vá em Integrações → Webhook                     │
+│    3. Cole a URL acima                                │
+│    4. Ative os eventos: channel-create, ...           │
+└────────────────────────────────────────────────────────┘
 ```
 
-## Solução
+### Detalhes Técnicos
 
-Usar o `bitrix_call_id` (do metadata) como chave de busca secundária, além do `api4com_call_id`.
+1. **Guardar `webhook_url` no estado** (`setupResult.webhook_url`)
+2. **Gerar URL estática** baseada no `VITE_SUPABASE_URL` quando não vier do setup
+3. **Usar `navigator.clipboard.writeText()`** para copiar
+4. **Exibir seção expandível** com instruções de configuração manual
 
----
+### Arquivos a Modificar
 
-## Alterações Técnicas
+| Arquivo | Mudança |
+|---------|---------|
+| `src/components/setup/steps/CredentialsSetup.tsx` | Adicionar exibição da URL do webhook com botão copiar e instruções manuais |
 
-### 1. Modificar `api4com-webhook/index.ts`
+### Código da Seção de Webhook (Nova)
 
-**Função `handleCallHangup`** (linhas ~303-310):
+Substituir a seção "Webhook Status" existente (linhas 264-296) por uma versão expandida que:
 
-Atualmente busca apenas por `api4com_call_id`:
-```typescript
-const { data: existingCall } = await supabase
-  .from("call_logs")
-  .select("id, bitrix_call_id")
-  .eq("api4com_call_id", body.id)  // ← Apenas este critério
-  .maybeSingle();
-```
+1. Mostra status (Configurado/Não Configurado)
+2. Exibe a URL do webhook em um campo copiável
+3. Adiciona instruções de configuração manual quando necessário
+4. Usa toast para feedback ao copiar
 
-**Correção - buscar também pelo `bitrix_call_id` do metadata:**
-```typescript
-// Primeiro tenta pelo api4com_call_id
-let existingCall = null;
-const { data: callByApi4comId } = await supabase
-  .from("call_logs")
-  .select("id, bitrix_call_id, api4com_call_id")
-  .eq("company_id", companyId)
-  .eq("api4com_call_id", body.id)
-  .maybeSingle();
+### Dependências
 
-existingCall = callByApi4comId;
+- Nenhuma nova dependência necessária
+- Usar `Copy` icon do lucide-react (já disponível)
 
-// Se não encontrou, tenta pelo bitrix_call_id do metadata
-if (!existingCall && body.metadata?.bitrixCallId) {
-  console.log("Searching by bitrix_call_id:", body.metadata.bitrixCallId);
-  const { data: callByBitrixId } = await supabase
-    .from("call_logs")
-    .select("id, bitrix_call_id, api4com_call_id")
-    .eq("company_id", companyId)
-    .eq("bitrix_call_id", body.metadata.bitrixCallId)
-    .maybeSingle();
-  
-  existingCall = callByBitrixId;
-}
-```
-
-### 2. Atualizar o `api4com_call_id` quando encontrado pelo Bitrix ID
-
-Quando encontrar pelo `bitrix_call_id`, atualizar o `api4com_call_id` para ter consistência:
-
-```typescript
-if (existingCall) {
-  // Atualiza o api4com_call_id se encontrou pelo bitrix_call_id
-  const updateData: Record<string, unknown> = {
-    status: callStatus,
-    duration_seconds: body.duration || 0,
-    recording_url: body.recordUrl || null,
-    call_ended_at: body.endedAt,
-  };
-  
-  // Se encontrou pelo bitrix_call_id, atualiza o api4com_call_id
-  if (!existingCall.api4com_call_id) {
-    updateData.api4com_call_id = body.id;
-  }
-  
-  await supabase
-    .from("call_logs")
-    .update(updateData)
-    .eq("id", existingCall.id);
-}
-```
-
-### 3. Usar o `bitrix_call_id` existente no finish (NÃO chamar register)
-
-Quando encontrar um registro existente, usar o `bitrix_call_id` original para chamar `telephony.externalcall.finish` **sem criar novo registro**:
-
-```typescript
-// Finish call in Bitrix24 usando o CALL_ID original
-if (userMapping?.bitrix24_user_id && existingCall.bitrix_call_id) {
-  await finishBitrix24Call(supabase, companyId, {
-    call_id: existingCall.bitrix_call_id,  // ← ID original do Bitrix
-    user_id: userMapping.bitrix24_user_id,
-    duration: body.duration || 0,
-    status_code: getBitrixStatusCode(callStatus),
-    recording_url: body.recordUrl,
-  });
-}
-```
-
----
-
-## Resultado Esperado
-
-Após a correção:
-
-1. Click-to-call no Deal 90 → Bitrix envia `CALL_ID: bc2f40df...`
-2. `bitrix24-webhook` salva com `bitrix_call_id: bc2f40df...`
-3. `api4com-webhook` recebe hangup → Busca por `bitrix_call_id` → **ENCONTRA!**
-4. Chama `telephony.externalcall.finish` com o `CALL_ID` original
-5. Gravação e informações aparecem no **Deal 90** (não cria novo Deal)
-
----
-
-## Arquivos a Modificar
-
-| Arquivo | Alteração |
-|---------|-----------|
-| `supabase/functions/api4com-webhook/index.ts` | Adicionar busca secundária por `bitrix_call_id` e evitar `CRM_CREATE` duplicado |
-
----
-
-## Benefícios
-
-- Chamadas iniciadas pelo click-to-call serão corretamente vinculadas ao Deal de origem
-- Gravações e métricas aparecerão no histórico correto
-- Não haverá criação de Deals duplicados
