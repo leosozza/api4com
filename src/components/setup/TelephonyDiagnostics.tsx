@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, XCircle, RefreshCw, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,10 +46,10 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
   const [isSettingOutgoing, setIsSettingOutgoing] = useState(false);
   const [result, setResult] = useState<DiagnosticsResult | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [hasInitialLoad, setHasInitialLoad] = useState(false);
 
-  const runDiagnostics = async () => {
+  const runDiagnostics = useCallback(async (showToast = true) => {
     setIsLoading(true);
-    setResult(null);
 
     try {
       const { data, error } = await supabase.functions.invoke('diagnose-telephony', {
@@ -58,14 +58,26 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
 
       if (error) throw error;
       setResult(data);
-      toast.success('Diagnóstico concluído');
+      if (showToast) {
+        toast.success('Diagnóstico concluído');
+      }
     } catch (err) {
       console.error('Diagnostics error:', err);
-      toast.error('Erro ao executar diagnóstico');
+      if (showToast) {
+        toast.error('Erro ao executar diagnóstico');
+      }
     } finally {
       setIsLoading(false);
+      setHasInitialLoad(true);
     }
-  };
+  }, [companyId]);
+
+  // Auto-run diagnostics on mount
+  useEffect(() => {
+    if (companyId && !hasInitialLoad) {
+      runDiagnostics(false);
+    }
+  }, [companyId, hasInitialLoad, runDiagnostics]);
 
   const runRepair = async () => {
     setIsRepairing(true);
@@ -204,7 +216,7 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
           <Button
-            onClick={runDiagnostics}
+            onClick={() => runDiagnostics(true)}
             disabled={isLoading || isRepairing}
             variant="outline"
             size="sm"
