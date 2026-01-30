@@ -50,9 +50,12 @@ function isTokenInvalidError(error: string | undefined, details?: string): boole
 export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [setupResult, setSetupResult] = useState<SetupResult | null>(null);
-  const { currentCompany } = useCompany();
-  const { api4comCredentials, bitrix24Credentials, saveApi4comCredentials } = useCredentials(currentCompany?.id);
-  const { isInBitrix, auth, currentUser } = useBitrix();
+  const { linkedCompany, isInBitrix, auth, currentUser } = useBitrix();
+  const { currentCompany } = useCompany(linkedCompany?.id);
+  
+  // Use effective company from either source
+  const effectiveCompany = currentCompany || linkedCompany;
+  const { api4comCredentials, bitrix24Credentials, saveApi4comCredentials } = useCredentials(effectiveCompany?.id);
 
   const api4comForm = useForm({
     resolver: zodResolver(api4comSchema),
@@ -62,10 +65,10 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
   });
 
   const handleApi4comSubmit = async (data: z.infer<typeof api4comSchema>) => {
-    if (!currentCompany?.id) {
+    if (!effectiveCompany?.id) {
       toast({
         title: 'Erro',
-        description: 'Empresa não encontrada',
+        description: 'Empresa não encontrada. Complete o passo anterior primeiro.',
         variant: 'destructive',
       });
       return;
@@ -86,7 +89,7 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
       
       const { data: result, error } = await supabase.functions.invoke('api4com-setup', {
         body: {
-          company_id: currentCompany.id,
+          company_id: effectiveCompany.id,
           api_token: data.api_token,
           bitrix_user_id: bitrixUserId,
           user_name: userName,
@@ -165,10 +168,12 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
   };
 
   // Check if Bitrix credentials are available (auto-configured via marketplace)
+  // When outside Bitrix (development mode), we only require Api4Com credentials
   const bitrixConfigured = isInBitrix && auth?.member_id;
   const webhookConfigured = api4comCredentials?.webhook_configured || setupResult?.webhook_configured;
 
-  const isComplete = !!api4comCredentials && (bitrixConfigured || !!bitrix24Credentials);
+  // Outside Bitrix: only require Api4Com. Inside Bitrix: require both
+  const isComplete = !!api4comCredentials && (!isInBitrix || bitrixConfigured || !!bitrix24Credentials);
 
   return (
     <div className="space-y-6">
