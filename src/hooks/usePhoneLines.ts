@@ -23,7 +23,7 @@ export function usePhoneLines(companyId: string | undefined) {
 
   // Register line in Bitrix24
   const registerLineInBitrix = async (lineNumber: string, lineName?: string) => {
-    if (!companyId) return { success: false };
+    if (!companyId) return { success: false, error: 'Empresa não encontrada' };
     
     try {
       const { data, error } = await supabase.functions.invoke('register-external-line', {
@@ -35,10 +35,16 @@ export function usePhoneLines(companyId: string | undefined) {
         return { success: false, error: error.message };
       }
       
+      // Check if the response contains an error
+      if (data?.error) {
+        console.error('Bitrix registration error:', data.error, data.details);
+        return { success: false, error: data.error, details: data.details };
+      }
+      
       return { success: true, ...data };
     } catch (err) {
       console.error('Error calling register-external-line:', err);
-      return { success: false, error: 'Failed to register line' };
+      return { success: false, error: 'Falha ao registrar linha' };
     }
   };
 
@@ -110,18 +116,23 @@ export function usePhoneLines(companyId: string | undefined) {
   // Sync all lines with Bitrix24
   const syncAllWithBitrix = useMutation({
     mutationFn: async () => {
-      if (!phoneLines) return { synced: 0, errors: 0 };
+      if (!phoneLines) return { synced: 0, errors: 0, errorDetails: [] as string[] };
       
       let synced = 0;
       let errors = 0;
+      const errorDetails: string[] = [];
       
       for (const line of phoneLines) {
         const result = await registerLineInBitrix(line.line_number, line.line_name || undefined);
-        if (result.success) synced++;
-        else errors++;
+        if (result.success) {
+          synced++;
+        } else {
+          errors++;
+          errorDetails.push(`${line.line_number}: ${result.error || 'Erro desconhecido'}`);
+        }
       }
       
-      return { synced, errors };
+      return { synced, errors, errorDetails };
     },
   });
 
