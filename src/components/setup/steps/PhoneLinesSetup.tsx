@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useCompany } from '@/hooks/useCompany';
 import { usePhoneLines } from '@/hooks/usePhoneLines';
+import { useBitrix } from '@/hooks/useBitrix';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -29,8 +30,12 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isRegisteringEvents, setIsRegisteringEvents] = useState(false);
   const [eventsRegistered, setEventsRegistered] = useState(false);
-  const { currentCompany } = useCompany();
-  const { phoneLines, addPhoneLine, deletePhoneLine, updatePhoneLine, syncAllWithBitrix } = usePhoneLines(currentCompany?.id);
+  const { linkedCompany } = useBitrix();
+  const { currentCompany } = useCompany(linkedCompany?.id);
+  
+  // Use effective company from either source
+  const effectiveCompany = currentCompany || linkedCompany;
+  const { phoneLines, addPhoneLine, deletePhoneLine, updatePhoneLine, syncAllWithBitrix } = usePhoneLines(effectiveCompany?.id);
 
   const form = useForm({
     resolver: zodResolver(phoneLineSchema),
@@ -141,10 +146,10 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
   };
 
   const handleRegisterTelephonyEvents = async () => {
-    if (!currentCompany?.id) {
+    if (!effectiveCompany?.id) {
       toast({
         title: 'Erro',
-        description: 'Empresa não encontrada',
+        description: 'Empresa não encontrada. Complete os passos anteriores primeiro.',
         variant: 'destructive',
       });
       return;
@@ -155,11 +160,11 @@ export function PhoneLinesSetup({ onComplete }: PhoneLinesSetupProps) {
       const defaultLine = phoneLines.find(l => l.is_default) || phoneLines[0];
       
       // Get member_id from company for fallback lookup
-      const memberId = currentCompany.bitrix_member_id;
+      const memberId = currentCompany?.bitrix_member_id;
       
       const { data, error } = await supabase.functions.invoke('register-telephony-events', {
         body: {
-          company_id: currentCompany.id,
+          company_id: effectiveCompany.id,
           member_id: memberId,
           phone_line_number: defaultLine?.line_number,
           phone_line_name: defaultLine?.line_name || 'Api4Com',
