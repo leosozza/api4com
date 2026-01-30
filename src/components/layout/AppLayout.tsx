@@ -71,7 +71,7 @@ export function AppLayout({ children }: AppLayoutProps) {
 
           <div className="flex items-center gap-2">
             <span className="hidden text-sm text-muted-foreground sm:inline">
-              {user?.email || (user?.is_anonymous ? 'Sessão anônima' : '')}
+              {user?.email || effectiveCompany?.name || ''}
             </span>
             {/* Only show reset button when NOT inside Bitrix (dev mode) */}
             {!isInBitrix && (
