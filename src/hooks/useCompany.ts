@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import type { Company } from '@/types/api4com';
+import { useBitrix } from './useBitrix';
 
 // Helper to ensure session exists before critical operations
 async function ensureSessionForOperation(): Promise<string> {
@@ -38,6 +39,7 @@ async function ensureSessionForOperation(): Promise<string> {
 
 export function useCompany(bitrixMemberId?: string | null) {
   const queryClient = useQueryClient();
+  const { isInBitrix, linkedCompany, companyId: bitrixCompanyId } = useBitrix();
 
   const { data: companies, isLoading: isLoadingCompanies } = useQuery({
     queryKey: ['companies'],
@@ -53,12 +55,29 @@ export function useCompany(bitrixMemberId?: string | null) {
   });
 
   const { data: currentCompany, isLoading: isLoadingCurrentCompany } = useQuery({
-    queryKey: ['current-company', bitrixMemberId],
+    queryKey: ['current-company', bitrixMemberId, bitrixCompanyId],
     queryFn: async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
 
-      // First, try to find by company_members (user is already linked)
+      // PRIORITY 1: If we're in Bitrix and have a linked company from BitrixContext, use it
+      // This ensures we always use the correct company based on Bitrix member_id
+      if (isInBitrix && linkedCompany && bitrixCompanyId) {
+        console.log('[useCompany] Using Bitrix-linked company:', bitrixCompanyId);
+        
+        const { data: company, error } = await supabase
+          .from('companies')
+          .select('*')
+          .eq('id', bitrixCompanyId)
+          .maybeSingle();
+
+        if (error) throw error;
+        if (company) {
+          return { ...company, role: linkedCompany.role } as Company & { role: string };
+        }
+      }
+
+      // PRIORITY 2: Find by company_members (for non-Bitrix mode or fallback)
       const { data: membership } = await supabase
         .from('company_members')
         .select('company_id, role')
