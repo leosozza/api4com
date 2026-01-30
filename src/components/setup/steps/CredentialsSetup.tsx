@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, Check, AlertCircle, CheckCircle, Wifi, WifiOff } from 'lucide-react';
+import { Loader2, Check, AlertCircle, CheckCircle, Wifi, WifiOff, ExternalLink, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from '@/components/ui/form';
@@ -29,6 +29,22 @@ interface SetupResult {
   webhook_url?: string;
   user_mapping_created?: boolean;
   error?: string;
+  details?: string;
+}
+
+// Helper to detect token-related errors
+function isTokenInvalidError(error: string | undefined, details?: string): boolean {
+  if (!error) return false;
+  const lowerError = error.toLowerCase();
+  const lowerDetails = (details || '').toLowerCase();
+  return (
+    lowerError.includes('inválido') ||
+    lowerError.includes('invalid') ||
+    lowerError.includes('401') ||
+    lowerError.includes('unauthorized') ||
+    lowerDetails.includes('401') ||
+    lowerDetails.includes('unauthorized')
+  );
 }
 
 export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
@@ -268,10 +284,47 @@ export function CredentialsSetup({ onComplete }: CredentialsSetupProps) {
 
         {/* Setup Result Details */}
         {setupResult && !setupResult.success && setupResult.error && (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>
-              <strong>Erro na configuração:</strong> {setupResult.error}
+          <Alert variant="destructive" className="mt-4">
+            <XCircle className="h-4 w-4" />
+            <AlertDescription className="space-y-3">
+              {isTokenInvalidError(setupResult.error, setupResult.details) ? (
+                <>
+                  <div className="font-medium">Token Api4Com inválido ou expirado</div>
+                  <div className="text-sm space-y-2">
+                    <p>O token informado não foi aceito pela Api4Com. Isso pode acontecer se:</p>
+                    <ul className="list-disc list-inside space-y-1 ml-2">
+                      <li>O token foi copiado incorretamente (verifique espaços extras)</li>
+                      <li>O token expirou ou foi revogado</li>
+                      <li>O token não tem as permissões necessárias</li>
+                    </ul>
+                    <div className="pt-2">
+                      <strong>Como obter um token válido:</strong>
+                      <ol className="list-decimal list-inside space-y-1 ml-2 mt-1">
+                        <li>
+                          Acesse{' '}
+                          <a
+                            href="https://app.api4com.com"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-medium underline inline-flex items-center gap-1"
+                          >
+                            app.api4com.com
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </li>
+                        <li>Vá em <strong>Integrações</strong> → <strong>API</strong></li>
+                        <li>Copie o token completo (certifique-se de copiar tudo)</li>
+                        <li>Cole o token no campo acima e tente novamente</li>
+                      </ol>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="font-medium">Erro na configuração</div>
+                  <p className="text-sm">{setupResult.error}</p>
+                </>
+              )}
             </AlertDescription>
           </Alert>
         )}
