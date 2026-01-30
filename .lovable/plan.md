@@ -1,120 +1,81 @@
 
+# Plano: Corrigir Click-to-Call para Usar Conector Api4Com (PBX)
 
-# Plano: Corrigir "App is not found" - Problema de Instalacao Incompleta
+## Problema Identificado
 
-## Analise da Documentacao Oficial
+O evento `ONEXTERNALCALLSTART` **não está sendo disparado** porque, segundo a documentação oficial do Bitrix24:
 
-Baseado na documentacao do Bitrix24 Developer Hub:
+> "To ensure the event is triggered, go to **Telephony > Telephony Settings** and select your application in the **Default outgoing call number** field."
 
-1. **O erro "App is not found" ocorre porque o Bitrix24 considera o app NAO INSTALADO**
-2. **Eventos (como ONEXTERNALCALLSTART) NAO sao enviados ate a instalacao estar completa**
-3. **Para apps com interface, e OBRIGATORIO chamar `BX24.installFinish()` corretamente**
+O usuário configurou corretamente o "Número para chamadas efetuadas" **no perfil do usuário** (Telephony Users), mas **não configurou o número padrão GLOBAL** nas Configurações de Telefonia.
 
-### Trecho da documentacao:
-> "Until the application sends a signal indicating the completion of installation via installFinish, the application will be considered not configured. Functionality will be blocked. Events will not be sent to the handler, even after a successful event.bind."
+O Bitrix24 prioriza a telefonia nativa (WebRTC/Voximplant) quando não detecta que uma aplicação externa é o **provedor padrão global** de saída.
 
-## Causa Raiz Identificada
+---
 
-O problema esta na forma como o app esta configurado no Partner Portal:
+## Solução
 
-| Configuracao | Valor Atual (Provavel) | Valor Correto |
-|--------------|------------------------|---------------|
-| Application URL | URL da SPA React | Edge Function Handler |
-| Initial install path | Pode estar errado | `...bitrix24-handler?action=install` |
-| Tipo de app | Com interface | Com interface (requer installFinish) |
+### 1. Configuração Manual no Bitrix24 (Prioridade)
 
-## Solucao Completa
+**Passo 1: Definir Número Padrão Global**
+1. Ir em **CRM > Vendas > Canais de Vendas > Telefonia**
+2. Clicar em **Configurar telefonia**
+3. Selecionar **Configurações de Telefonia** (Telephony Settings)
+4. No campo **"Número padrão para chamadas efetuadas"**, selecionar **"Api4Com: +5515996045202"**
+5. Salvar
 
-### Passo 1: Verificar se o App esta Marcado como Instalado
+**Passo 2: Verificar Configuração do Usuário** (Já feito)
+1. Na mesma área, ir em **Usuários de Telefonia**
+2. O usuário Leonardo já está com "Api4Com" selecionado
 
-Adicionar uma verificacao no diagnostico que chama `app.info` para ver se `INSTALLED: true` ou `INSTALLED: false`.
+**Passo 3: Testar**
+- Abrir um Lead/Contato no CRM
+- Clicar no número de telefone
+- Se funcionou: o webhook `bitrix24-webhook` vai receber o evento
+- Se não funcionou: O Bitrix ainda vai discar nativamente
 
-Se `INSTALLED: false`, o app precisa ser reinstalado ou o `installFinish()` nunca foi chamado corretamente.
+---
 
-### Passo 2: Atualizar URLs no Partner Portal
+### 2. Melhorias na UI de Diagnóstico
 
-No Bitrix24 Partner Portal, configure:
+Criar alertas mais claros no painel de diagnóstico (`TelephonyDiagnostics.tsx`) para identificar automaticamente este problema.
 
-```text
-Application URL (onde o app abre normalmente):
-https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=settings
+**Verificações a adicionar:**
+- Detectar se `voximplant.line.outgoing.get` retorna a linha Api4Com
+- Comparar linha global vs linha do usuário
+- Exibir alerta específico quando global != Api4Com
 
-Initial install path (caminho de instalacao):
-https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=install
+**Arquivos a modificar:**
+- `src/components/setup/TelephonyDiagnostics.tsx`: Adicionar seção "Configuração de Saída Global"
 
-Settings path (configuracoes do app):
-https://xdyumezeouultnxssnlc.supabase.co/functions/v1/bitrix24-handler?action=settings
-```
+---
 
-IMPORTANTE: A "Application URL" deve apontar para o handler que carrega o SDK BX24 e depois redireciona para a SPA, nao diretamente para a SPA.
+### 3. Checklist para PBX/Conector REST
 
-### Passo 3: Modificar o Handler para Suportar GET
+O usuário perguntou "como configurar como PBX". No Bitrix24 com REST connector:
 
-O Bitrix24 abre o app via GET (iframe), mas nosso handler pode nao estar tratando isso corretamente quando e a "Application URL".
+| Configuração | Local | Valor |
+|--------------|-------|-------|
+| Número padrão global | Telefonia > Configurações | Api4Com: +55... |
+| Número do usuário | Telefonia > Usuários | Api4Com: +55... |
+| Telefone SIP | Telefonia > Usuários | "Não conectado" |
+| Eventos registrados | (Via API) | ONEXTERNALCALLSTART |
+| Linha externa | (Via API) | +5515996045202 |
 
-Mudancas no `bitrix24-handler`:
-- Adicionar suporte a GET requests para action=settings (carregamento do app)
-- Garantir que a pagina HTML retornada inicializa BX24 SDK antes de redirecionar
+---
 
-### Passo 4: Adicionar Verificacao de Status no Diagnostico
+## Resumo Técnico
 
-Implementar chamada `app.info` no diagnostico para mostrar:
-- `INSTALLED: true` = App instalado corretamente
-- `INSTALLED: false` = Precisa reinstalar
-
-### Passo 5: Reinstalar o App
-
-Apos atualizar as URLs:
-1. Desinstalar o app atual em thoth24.bitrix24.com.br
-2. Reinstalar o app
-3. A pagina de instalacao (handler?action=install) deve:
-   - Mostrar mensagem de instalacao
-   - Chamar `BX24.installFinish()`
-   - Redirecionar para configuracoes
-
-## Mudancas de Codigo
-
-### Arquivo 1: `supabase/functions/bitrix24-handler/index.ts`
-
-Modificar para:
-1. Tratar GET requests (quando o Bitrix24 abre o app no iframe)
-2. Garantir que a pagina HTML inicializa o SDK antes de redirecionar
-3. Adicionar logs para debug
-
-### Arquivo 2: `supabase/functions/diagnose-telephony/index.ts`
-
-Adicionar:
-1. Chamada `app.info` para verificar status de instalacao
-2. Retornar `isInstalled: true/false` no resultado
-
-### Arquivo 3: `src/components/setup/TelephonyDiagnostics.tsx`
-
-Mostrar:
-1. Badge indicando se o app esta instalado ou nao
-2. Instrucao clara para reinstalar se `INSTALLED: false`
-
-## Fluxo Esperado Apos Correcao
+O fluxo correto de click-to-call com conector REST:
 
 ```text
-1. Usuario abre o app no Bitrix24
-   ↓
-2. Bitrix24 faz GET em: bitrix24-handler?action=settings
-   ↓
-3. Handler retorna HTML com BX24 SDK
-   ↓
-4. HTML inicializa BX24.init() e redireciona para SPA
-   ↓
-5. SPA carrega normalmente dentro do iframe
-   ↓
-6. Click-to-call no CRM dispara ONEXTERNALCALLSTART
-   ↓
-7. Evento chega no bitrix24-webhook
+1. Usuário clica no telefone no CRM
+2. Bitrix verifica "Número padrão para chamadas efetuadas"
+   - Se = Aplicação REST: dispara evento ONEXTERNALCALLSTART para o webhook
+   - Se = Telefonia nativa: ignora webhook e disca via WebRTC/Voximplant
+3. Webhook recebe evento
+4. Webhook chama Api4Com para originar chamada
+5. PBX conecta ramal + destino
 ```
 
-## Resultado Esperado
-
-- O erro "App is not found" desaparece
-- O app abre normalmente no iframe do Bitrix24
-- Eventos de telefonia sao enviados para o webhook
-- Click-to-call funciona
-
+O problema atual está no passo 2: O Bitrix está usando telefonia nativa porque o **número padrão global** não está configurado para a aplicação Api4Com.
