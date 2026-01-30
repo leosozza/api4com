@@ -194,15 +194,22 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
     );
   })();
   
-  // Check user-level default line
-  const userDefaultLineId = result?.checks?.voximplantUserDefaultLineId;
+  // Check user-level default line - extract the actual line ID
+  const userDefaultLineIdRaw = result?.checks?.voximplantUserDefaultLineId;
+  const userDefaultLineStr = typeof userDefaultLineIdRaw === 'object' && userDefaultLineIdRaw !== null
+    ? (userDefaultLineIdRaw as { defaultLineId?: string }).defaultLineId || ''
+    : String(userDefaultLineIdRaw || '');
+  
   const isUserLineApi4Com = (() => {
-    if (!userDefaultLineId || !defaultLineNumber) return false;
-    const lineStr = String(userDefaultLineId);
-    return lineStr.includes(defaultLineNumber) || 
-           lineStr === defaultLineNumber ||
-           lineStr.startsWith('rest_');
+    if (!userDefaultLineStr || !lineToCheck) return false;
+    return userDefaultLineStr.includes(lineToCheck) || 
+           userDefaultLineStr === lineToCheck ||
+           lineToCheck.includes(userDefaultLineStr) ||
+           userDefaultLineStr.startsWith('rest_');
   })();
+  
+  // Detect user line conflict - user has a different line configured
+  const hasUserLineConflict = userDefaultLineStr && lineToCheck && !isUserLineApi4Com;
   
   // Check if SIP is active (potential conflict)
   const hasSipConnector = !!result?.checks?.sipConnectorStatus;
@@ -386,6 +393,36 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
             {!isGlobalOutgoingApi4Com && !isGlobalConfigIssue && result && (
               <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
                 <strong>Aviso:</strong> Provedor de saída global está configurado como "{String(outgoingProvider || 'não definido')}" em vez de "{lineToCheck || '(linha não configurada)'}".
+              </div>
+            )}
+
+            {/* User line conflict warning */}
+            {hasUserLineConflict && (
+              <div className="rounded-md bg-orange-100 p-3 text-sm text-orange-800 space-y-2">
+                <div>
+                  <strong>⚠️ Conflito de Linha do Usuário</strong>
+                </div>
+                <p>
+                  O usuário <strong>{result?.checks?.currentUser?.name || 'atual'}</strong> tem a linha padrão pessoal 
+                  configurada como <code className="bg-orange-200/50 px-1 rounded">{userDefaultLineStr}</code> em vez de 
+                  <code className="bg-orange-200/50 px-1 rounded">{lineToCheck}</code>.
+                </p>
+                <p>
+                  Isso pode fazer com que o Click-to-Call use a linha errada ou não dispare o webhook corretamente.
+                </p>
+                <details className="text-xs">
+                  <summary className="cursor-pointer font-medium">Como corrigir:</summary>
+                  <div className="bg-white/50 p-2 rounded mt-2 space-y-1">
+                    <ol className="list-decimal list-inside space-y-1">
+                      <li>No Bitrix24, vá em <strong>CRM → Vendas → Telefonia</strong></li>
+                      <li>Clique em <strong>Configurar telefonia</strong></li>
+                      <li>Selecione <strong>Usuários de Telefonia</strong></li>
+                      <li>Encontre o usuário <strong>{result?.checks?.currentUser?.name || 'Henri'}</strong></li>
+                      <li>No campo <strong>"Número para chamadas de saída"</strong>, selecione <strong>"{lineToCheck}"</strong></li>
+                      <li>Salve as alterações</li>
+                    </ol>
+                  </div>
+                </details>
               </div>
             )}
 
