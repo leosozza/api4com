@@ -21,10 +21,16 @@ interface DiagnosticsResult {
     currentUser?: { id: string; name: string; isAdmin: boolean };
     currentUserError?: string;
     voximplantOutgoingGet?: unknown;
+    voximplantOutgoingGetError?: string;
+    voximplantUserDefaultLineId?: unknown;
+    voximplantUserDefaultLineIdError?: string;
     voximplantLines?: Array<Record<string, unknown>>;
     telephonyMethods?: string[];
     defaultLineNumber?: string;
     resolvedDefaultLine?: Record<string, unknown>;
+    sipConnectorStatus?: unknown;
+    sipLines?: Array<Record<string, unknown>>;
+    voximplantUsers?: Array<Record<string, unknown>>;
   };
   userMappings?: Array<{ id: string; bitrix24_user_id: string; api4com_extension: string; user_name?: string }>;
   phoneLines?: Array<{ id: string; line_number: string; is_default: boolean }>;
@@ -123,11 +129,38 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
   // Check if outgoing provider is correctly set to our external line
   const outgoingProvider = result?.checks?.voximplantOutgoingGet;
   const defaultLineNumber = result?.checks?.defaultLineNumber;
-  const isOutgoingProviderCorrect = outgoingProvider === defaultLineNumber;
+  
+  // Check if global outgoing is set to our external line (critical for click-to-call)
+  const isGlobalOutgoingApi4Com = (() => {
+    if (!outgoingProvider || !defaultLineNumber) return false;
+    const providerStr = String(outgoingProvider);
+    // Check if the global outgoing contains our line number
+    return providerStr.includes(defaultLineNumber) || 
+           providerStr === defaultLineNumber ||
+           // Also check for "rest_" prefix which indicates REST app line
+           providerStr.startsWith('rest_');
+  })();
+  
+  // Check user-level default line
+  const userDefaultLineId = result?.checks?.voximplantUserDefaultLineId;
+  const isUserLineApi4Com = (() => {
+    if (!userDefaultLineId || !defaultLineNumber) return false;
+    const lineStr = String(userDefaultLineId);
+    return lineStr.includes(defaultLineNumber) || 
+           lineStr === defaultLineNumber ||
+           lineStr.startsWith('rest_');
+  })();
+  
+  // Check if SIP is active (potential conflict)
+  const hasSipConnector = !!result?.checks?.sipConnectorStatus;
+  const hasSipLines = (result?.checks?.sipLines?.length ?? 0) > 0;
   
   // Check app installation status - CRITICAL for events to work
   const isAppInstalled = result?.checks?.isAppInstalled ?? false;
   const installationStatus = result?.checks?.installationStatus;
+  
+  // Determine if global config is the likely issue
+  const isGlobalConfigIssue = hasCallEvents && hasExternalLines && !isGlobalOutgoingApi4Com;
 
   return (
     <Card className="border-orange-200 bg-orange-50/50">
@@ -197,10 +230,20 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
                 {getStatusIcon(hasUserMappings)}
                 Mapeamentos
               </Badge>
-              <Badge variant={isOutgoingProviderCorrect ? "default" : "destructive"} className="gap-1">
-                {getStatusIcon(isOutgoingProviderCorrect)}
-                Provedor Saída
+              <Badge variant={isGlobalOutgoingApi4Com ? "default" : "destructive"} className="gap-1">
+                {getStatusIcon(isGlobalOutgoingApi4Com)}
+                Global Saída
               </Badge>
+              <Badge variant={isUserLineApi4Com ? "default" : "secondary"} className="gap-1">
+                {getStatusIcon(isUserLineApi4Com)}
+                Usuário Saída
+              </Badge>
+              {hasSipLines && (
+                <Badge variant="secondary" className="gap-1">
+                  <AlertTriangle className="h-3 w-3 text-yellow-500" />
+                  SIP Ativo
+                </Badge>
+              )}
             </div>
 
             {/* Issues summary */}
@@ -230,9 +273,45 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
               </div>
             )}
 
-            {!isOutgoingProviderCorrect && result && (
+            {/* CRITICAL: Global outgoing configuration issue */}
+            {isGlobalConfigIssue && (
+              <div className="rounded-md bg-red-100 p-3 text-sm text-red-800 space-y-2">
+                <div>
+                  <strong>🚨 PROBLEMA IDENTIFICADO: Configuração Global de Saída</strong>
+                </div>
+                <p>
+                  O Bitrix24 está usando a <strong>telefonia nativa</strong> em vez do conector Api4Com porque o 
+                  <strong> "Número padrão para chamadas efetuadas"</strong> não está configurado globalmente.
+                </p>
+                <div className="bg-white/50 p-2 rounded text-xs space-y-1">
+                  <div><strong>Como corrigir:</strong></div>
+                  <ol className="list-decimal list-inside space-y-1">
+                    <li>Vá em <strong>CRM → Vendas → Canais de Vendas → Telefonia</strong></li>
+                    <li>Clique em <strong>Configurar telefonia</strong></li>
+                    <li>Selecione <strong>Configurações de Telefonia</strong> (Telephony Settings)</li>
+                    <li>No campo <strong>"Número padrão para chamadas efetuadas"</strong>, selecione <strong>"Api4Com: {defaultLineNumber}"</strong></li>
+                    <li>Salve as alterações</li>
+                  </ol>
+                </div>
+                <p className="text-xs opacity-80">
+                  Valor atual do provedor global: <code className="bg-white/50 px-1 rounded">{String(outgoingProvider || 'não definido')}</code>
+                </p>
+              </div>
+            )}
+
+            {/* Warning when global is not set but user might be */}
+            {!isGlobalOutgoingApi4Com && !isGlobalConfigIssue && result && (
               <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
-                <strong>Aviso:</strong> Provedor de saída está configurado como "{String(outgoingProvider)}" em vez de "{defaultLineNumber}". O reparo irá corrigir.
+                <strong>Aviso:</strong> Provedor de saída global está configurado como "{String(outgoingProvider || 'não definido')}" em vez de "{defaultLineNumber}".
+              </div>
+            )}
+
+            {/* SIP conflict warning */}
+            {hasSipLines && (
+              <div className="rounded-md bg-yellow-100 p-3 text-sm text-yellow-800">
+                <strong>Aviso:</strong> Linhas SIP detectadas no portal. Se o usuário tiver um "Telefone SIP" configurado, 
+                o Bitrix pode priorizar a telefonia SIP sobre o conector REST. Verifique em <strong>Telefonia → Usuários</strong> 
+                se o campo "Telefone SIP" está <strong>vazio</strong> ou <strong>"Não conectado"</strong>.
               </div>
             )}
 
