@@ -213,7 +213,11 @@ Deno.serve(async (req) => {
       const linesGet: BitrixApiResponse<Array<Record<string, unknown>>> = await linesGetResp.json();
       const defaultLineId: BitrixApiResponse = await defaultLineIdResp.json();
 
-      const lines = linesGet.result || [];
+      // Ensure lines is always an array (Bitrix can return object for single line)
+      const rawLines = linesGet.result;
+      const lines: Array<Record<string, unknown>> = Array.isArray(rawLines) 
+        ? rawLines 
+        : (rawLines ? [rawLines] : []);
 
       const resolvedDefaultLine = defaultLineNumber
         ? lines.find((l) => {
