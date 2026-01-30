@@ -43,6 +43,7 @@ interface TelephonyDiagnosticsProps {
 export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
+  const [isSettingOutgoing, setIsSettingOutgoing] = useState(false);
   const [result, setResult] = useState<DiagnosticsResult | null>(null);
   const [showDetails, setShowDetails] = useState(false);
 
@@ -110,6 +111,32 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
     }
   };
 
+  const setOutgoingLine = async () => {
+    setIsSettingOutgoing(true);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('set-outgoing-line', {
+        body: { company_id: companyId },
+      });
+
+      if (error) throw error;
+
+      if (data?.success) {
+        toast.success(data.message || 'Provedor de saída configurado com sucesso!');
+      } else {
+        toast.error(data?.message || 'Erro ao configurar provedor de saída');
+      }
+      
+      // Re-run diagnostics to show updated state
+      await runDiagnostics();
+    } catch (err) {
+      console.error('Set outgoing line error:', err);
+      toast.error('Erro ao configurar provedor de saída');
+    } finally {
+      setIsSettingOutgoing(false);
+    }
+  };
+
   const getStatusIcon = (isOk: boolean) => {
     return isOk ? (
       <CheckCircle className="h-4 w-4 text-green-500" />
@@ -117,6 +144,7 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
       <XCircle className="h-4 w-4 text-red-500" />
     );
   };
+
 
   const hasCallEvents = result?.checks?.registeredEvents?.some(
     (e) => e.event === 'ONEXTERNALCALLSTART' || e.event === 'ONEXTERNALCALLBACKSTART'
@@ -191,7 +219,7 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
           
           <Button
             onClick={runRepair}
-            disabled={isLoading || isRepairing}
+            disabled={isLoading || isRepairing || isSettingOutgoing}
             variant="default"
             size="sm"
           >
@@ -199,6 +227,18 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : null}
             Reparar Eventos
+          </Button>
+
+          <Button
+            onClick={setOutgoingLine}
+            disabled={isLoading || isRepairing || isSettingOutgoing}
+            variant="secondary"
+            size="sm"
+          >
+            {isSettingOutgoing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
+            Configurar Saída Global
           </Button>
         </div>
 
@@ -275,7 +315,7 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
 
             {/* CRITICAL: Global outgoing configuration issue */}
             {isGlobalConfigIssue && (
-              <div className="rounded-md bg-red-100 p-3 text-sm text-red-800 space-y-2">
+              <div className="rounded-md bg-red-100 p-3 text-sm text-red-800 space-y-3">
                 <div>
                   <strong>🚨 PROBLEMA IDENTIFICADO: Configuração Global de Saída</strong>
                 </div>
@@ -283,16 +323,34 @@ export function TelephonyDiagnostics({ companyId }: TelephonyDiagnosticsProps) {
                   O Bitrix24 está usando a <strong>telefonia nativa</strong> em vez do conector Api4Com porque o 
                   <strong> "Número padrão para chamadas efetuadas"</strong> não está configurado globalmente.
                 </p>
-                <div className="bg-white/50 p-2 rounded text-xs space-y-1">
-                  <div><strong>Como corrigir:</strong></div>
-                  <ol className="list-decimal list-inside space-y-1">
-                    <li>Vá em <strong>CRM → Vendas → Canais de Vendas → Telefonia</strong></li>
-                    <li>Clique em <strong>Configurar telefonia</strong></li>
-                    <li>Selecione <strong>Configurações de Telefonia</strong> (Telephony Settings)</li>
-                    <li>No campo <strong>"Número padrão para chamadas efetuadas"</strong>, selecione <strong>"Api4Com: {defaultLineNumber}"</strong></li>
-                    <li>Salve as alterações</li>
-                  </ol>
-                </div>
+                
+                {/* Quick fix button */}
+                <Button
+                  onClick={setOutgoingLine}
+                  disabled={isSettingOutgoing}
+                  variant="destructive"
+                  size="sm"
+                  className="w-full"
+                >
+                  {isSettingOutgoing ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  🔧 Configurar Automaticamente via API
+                </Button>
+
+                <details className="text-xs">
+                  <summary className="cursor-pointer font-medium">Ou configure manualmente:</summary>
+                  <div className="bg-white/50 p-2 rounded mt-2 space-y-1">
+                    <ol className="list-decimal list-inside space-y-1">
+                      <li>Vá em <strong>CRM → Vendas → Canais de Vendas → Telefonia</strong></li>
+                      <li>Clique em <strong>Configurar telefonia</strong></li>
+                      <li>Selecione <strong>Configurações de Telefonia</strong> (Telephony Settings)</li>
+                      <li>No campo <strong>"Número padrão para chamadas efetuadas"</strong>, selecione <strong>"Api4Com: {defaultLineNumber}"</strong></li>
+                      <li>Salve as alterações</li>
+                    </ol>
+                  </div>
+                </details>
+                
                 <p className="text-xs opacity-80">
                   Valor atual do provedor global: <code className="bg-white/50 px-1 rounded">{String(outgoingProvider || 'não definido')}</code>
                 </p>
