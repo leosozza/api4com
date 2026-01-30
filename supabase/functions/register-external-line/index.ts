@@ -56,19 +56,44 @@ Deno.serve(async (req) => {
     }
 
     // Register line in Bitrix24 using telephony.externalLine.add
-    const baseUrl = bitrixCreds.client_endpoint || `https://${bitrixCreds.domain}/rest/`;
-    const endpoint = baseUrl.includes("/rest/") 
-      ? `${baseUrl}telephony.externalLine.add`
-      : `${baseUrl}/telephony.externalLine.add`;
+    // For OAuth apps, client_endpoint is oauth.bitrix.info which requires auth param
+    // For webhook apps, we use the domain directly
+    let endpoint: string;
+    let requestBody: Record<string, unknown>;
 
-    const requestBody: Record<string, unknown> = {
-      NUMBER: body.line_number,
-      NAME: body.line_name || body.line_number,
-      CRM_AUTO_CREATE: "Y", // Auto-create CRM entities
-      auth: bitrixCreds.access_token,
-    };
+    if (bitrixCreds.client_endpoint && bitrixCreds.client_endpoint.includes("oauth.bitrix.info")) {
+      // OAuth app - use client_endpoint with auth parameter
+      endpoint = `${bitrixCreds.client_endpoint}telephony.externalLine.add`;
+      requestBody = {
+        NUMBER: body.line_number,
+        NAME: body.line_name || body.line_number,
+        CRM_AUTO_CREATE: "Y",
+        auth: bitrixCreds.access_token,
+      };
+    } else if (bitrixCreds.client_endpoint) {
+      // Has custom client_endpoint (likely includes token in URL)
+      endpoint = bitrixCreds.client_endpoint.endsWith("/")
+        ? `${bitrixCreds.client_endpoint}telephony.externalLine.add`
+        : `${bitrixCreds.client_endpoint}/telephony.externalLine.add`;
+      requestBody = {
+        NUMBER: body.line_number,
+        NAME: body.line_name || body.line_number,
+        CRM_AUTO_CREATE: "Y",
+        auth: bitrixCreds.access_token,
+      };
+    } else {
+      // Webhook mode - use domain directly (should not happen for marketplace apps)
+      endpoint = `https://${bitrixCreds.domain}/rest/telephony.externalLine.add`;
+      requestBody = {
+        NUMBER: body.line_number,
+        NAME: body.line_name || body.line_number,
+        CRM_AUTO_CREATE: "Y",
+        auth: bitrixCreds.access_token,
+      };
+    }
 
     console.log("Registering line in Bitrix24:", endpoint);
+    console.log("Using OAuth mode:", bitrixCreds.client_endpoint?.includes("oauth.bitrix.info") ? "yes" : "no");
     console.log("Request body:", JSON.stringify(requestBody));
 
     const response = await fetch(endpoint, {
