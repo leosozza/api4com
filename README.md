@@ -1,73 +1,37 @@
-# Welcome to your Lovable project
+# Api4Com Connector para Bitrix24
 
-## Project info
+Conector de telefonia que integra o sistema Api4Com WebPhone com o Bitrix24 CRM.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Funcionalidades
 
-## How can I edit this code?
+- Click-to-Call direto do Bitrix24
+- Registro automático de chamadas no CRM
+- Identificação de contatos por número
+- Sincronização de ramais com usuários Bitrix24
+- Webhook para eventos de chamada em tempo real
 
-There are several ways of editing your application.
+## Desenvolvedor
 
-**Use Lovable**
+**Thoth24** - Parceiro Bitrix24
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+## Tecnologias
 
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
+- React + TypeScript
 - Vite
-- TypeScript
-- React
-- shadcn-ui
 - Tailwind CSS
+- Supabase (Backend)
 
-## How can I deploy this project?
+## Instalação
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+O aplicativo deve ser instalado através do Marketplace do Bitrix24.
 
-## Can I connect a custom domain to my Lovable project?
+## Configuração
 
-Yes, you can!
+1. Instale o app no seu portal Bitrix24
+2. Acesse a configuração do app
+3. Insira seu token da Api4Com
+4. Configure o mapeamento de ramais para usuários
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+## Licença
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+Proprietário - Thoth24
