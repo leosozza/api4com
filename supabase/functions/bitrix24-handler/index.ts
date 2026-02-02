@@ -47,7 +47,7 @@ function parseFormBody(body: string): Record<string, string> {
 
 // Get app URL
 function getAppUrl(): string {
-  return Deno.env.get("APP_URL") || "https://api4com.lovable.app";
+  return Deno.env.get("APP_URL") || "https://api4com.thoth24.com.br";
 }
 
 // Get Supabase URL

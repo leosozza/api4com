@@ -309,7 +309,7 @@ Deno.serve(async (req) => {
     console.log("Installation completed for company:", companyId);
 
     // Get app URL from environment or use default
-    const appUrl = Deno.env.get("APP_URL") || "https://api4com.lovable.app";
+    const appUrl = Deno.env.get("APP_URL") || "https://api4com.thoth24.com.br";
     
     // Return HTML page that signals installation completion to Bitrix24
     // Using BX24.installFinish() instead of redirect to maintain SDK context
