@@ -1,59 +1,37 @@
+# Tenant DualWin: diagnóstico e consolidação
 
-# Plano: Reenviar telephony.externalcall.finish para Deal 134
+## O que os dados mostram
 
-## Diagnóstico
+O portal `dualwin.bitrix24.com.br` (member_id `98181653441a68555da7ba1102d6aca6`) existe em **três registros de empresa diferentes**:
 
-O `telephony.externalcall.finish` falhou porque o **access_token do Bitrix24 expirou em 2 de fevereiro de 2026**. A chamada ocorreu em 18 de fevereiro, logo todas as chamadas à API do Bitrix24 falharam silenciosamente.
+| Empresa | Criada em | member_id | Credenciais | Chamadas | Membros |
+|---|---|---|---|---|---|
+| `b971eb6d…` DualWin Consultoria Empresarial | 30/01 | ausente | Bitrix24 + Api4Com + 1 linha | 5 | 1 |
+| `4f7844d1…` Portal dualwin.bitrix24.com.br | 30/01 | presente | Api4Com + 1 linha | 0 | 0 |
+| `1cdd794b…` DualWin Consultoria Empresarial | 19/05 | ausente | nenhuma | 0 | 1 |
 
-**Dados da chamada:**
-- Bitrix Call ID: `externalCall.d58222b22d4e11e3d273c9b174a08d9e.1771443560`
-- Bitrix User ID: `1`
-- Duração: 180 segundos
-- Status: completed (code 200)
-- Gravação: `https://listener.api4com.com/files/listen/a6f1f205-1232-4705-a53f-599e3241826d.mp3`
-- Endpoint: `https://thoth24.bitrix24.com.br/rest/`
+Sinais de uso:
+- Últimas chamadas registradas: 30/01, 02/02 e 13/02 (5 no total, todas de saída).
+- Último refresh do token Bitrix24: 24/02 (token expirado desde então).
+- Em 19/05 alguém abriu o app e criou uma terceira empresa manual, sem credenciais.
 
-## O que será feito
+Conclusão: o tenant **usou** a aplicação em fevereiro e voltou a acessar em maio, mas caiu num perfil vazio. Desde 24/02 não há renovação de token nem chamadas — na prática, hoje está parado.
 
-### 1. Criar Edge Function `retry-call-finish`
+## Causa provável
 
-Uma função que:
-1. Renova o token OAuth usando o `refresh_token` existente (via `https://oauth.bitrix.info/oauth/token/`)
-2. Salva o novo token no banco de dados
-3. Envia `telephony.externalcall.finish` com os dados da chamada e a URL da gravação
-4. Retorna o resultado da operação
+A auto-vinculação por `bitrix_member_id` resolve para `4f7844d1…`, que está vazia (sem membros, sem credenciais Bitrix). As credenciais reais e o histórico estão em `b971eb6d…`, que não tem `bitrix_member_id`. Quem abre o app pelo portal não enxerga os dados corretos e acaba criando empresa nova — foi o que aconteceu em maio.
 
-A function será chamada via POST com o `company_id` no body, e os dados da chamada estarão hardcoded para esta operação específica.
+## O que fazer
 
-### 2. Configuração
+1. **Consolidar o tenant** numa única empresa (`b971eb6d…`, que concentra credenciais e histórico):
+   - mover `bitrix_member_id` do registro `4f7844d1…` para `b971eb6d…`;
+   - migrar linhas/credenciais Api4Com órfãs, removendo duplicatas;
+   - remover/arquivar os registros `4f7844d1…` e `1cdd794b…`.
+2. **Reautorizar o portal**: o token está expirado desde 24/02. O admin precisa reabrir o app no Bitrix24 para gerar novo par de tokens (ou reinstalar, se o refresh também tiver expirado).
+3. **Prevenir recorrência**: na criação/resolução de empresa, quando o app roda dentro do Bitrix, sempre casar por `bitrix_member_id` antes de permitir criar empresa nova, e bloquear a criação manual em contexto de portal já conhecido.
 
-Adicionar ao `supabase/config.toml`:
-```toml
-[functions.retry-call-finish]
-verify_jwt = false
-```
+## Detalhes técnicos
 
-### 3. Executar e Testar
-
-Após deploy, chamar a function para reenviar o finish e verificar se a gravação foi vinculada ao deal no Bitrix24.
-
----
-
-## Detalhes Técnicos
-
-**Fluxo da function:**
-
-```text
-1. Buscar credenciais Bitrix24 (company_id: 82e09b93...)
-2. Renovar OAuth token via oauth.bitrix.info
-3. Salvar novo token no banco
-4. POST telephony.externalcall.finish com:
-   - CALL_ID: externalCall.d58222b2...
-   - USER_ID: 1
-   - DURATION: 180
-   - STATUS_CODE: 200
-   - RECORD_URL: https://listener.api4com.com/files/listen/a6f1f205...mp3
-5. Retornar resultado
-```
-
-**Problema raiz a resolver depois:** O `api4com-webhook` não faz refresh de token antes de chamar o Bitrix24. Isso deve ser corrigido para evitar falhas futuras.
+- Consolidação via migração SQL pontual (UPDATE em `companies.bitrix_member_id`, re-parent de `api4com_credentials`/`external_phone_lines`/`call_logs`, DELETE dos duplicados respeitando FKs).
+- Ajuste na Edge Function `link-user-to-company` e no fluxo de `CompanySetup` para não criar empresa quando já existe uma com o `member_id` do portal.
+- Verificação pós-consolidação: `useCompany` deve retornar `b971eb6d…` para qualquer usuário do portal DualWin.
