@@ -135,6 +135,29 @@ export function CompanySetup({ linkedCompany, onComplete }: CompanySetupProps) {
     );
   }
 
+  // Inside a Bitrix portal the company always comes from the installation.
+  // Creating one manually here is what fragments the tenant, so we block it.
+  if (isInBitrix) {
+    return (
+      <div className="space-y-4">
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Não foi possível vincular este portal a uma empresa. A empresa é criada
+            automaticamente na instalação do aplicativo — não crie uma manualmente.
+            Tente recarregar; se persistir, reinstale o aplicativo no Bitrix24.
+          </AlertDescription>
+        </Alert>
+        <Button variant="outline" onClick={() => refreshAuth()}>
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Tentar novamente
+        </Button>
+      </div>
+    );
+  }
+
+
+
   return (
     <div className="space-y-4">
       {/* Session status alert */}
