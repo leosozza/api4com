@@ -6,6 +6,104 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+// deno-lint-ignore no-explicit-any
+type Admin = any;
+
+/**
+ * Moves credentials, lines, mappings and call logs from any manual company
+ * (created outside the Bitrix install flow, i.e. bitrix_member_id IS NULL)
+ * the user belongs to, into the portal company. Then removes the empty duplicate.
+ */
+async function consolidateManualCompanies(admin: Admin, userId: string, portalCompanyId: string) {
+  const { data: memberships } = await admin
+    .from("company_members")
+    .select("company_id")
+    .eq("user_id", userId);
+
+  const otherIds: string[] = (memberships || [])
+    .map((m: { company_id: string }) => m.company_id)
+    .filter((id: string) => id !== portalCompanyId);
+
+  if (otherIds.length === 0) return;
+
+  const { data: manualCompanies } = await admin
+    .from("companies")
+    .select("id, name")
+    .in("id", otherIds)
+    .is("bitrix_member_id", null);
+
+  for (const manual of manualCompanies || []) {
+    console.log("[link-user-to-company] Consolidating manual company:", manual.id, manual.name);
+
+    // Api4Com credentials: only move if the portal company has none
+    const { data: portalApi } = await admin
+      .from("api4com_credentials")
+      .select("id")
+      .eq("company_id", portalCompanyId)
+      .maybeSingle();
+
+    if (portalApi) {
+      await admin.from("api4com_credentials").delete().eq("company_id", manual.id);
+    } else {
+      await admin
+        .from("api4com_credentials")
+        .update({ company_id: portalCompanyId })
+        .eq("company_id", manual.id);
+    }
+
+    // Phone lines: skip numbers already present on the portal company
+    const { data: portalLines } = await admin
+      .from("external_phone_lines")
+      .select("line_number")
+      .eq("company_id", portalCompanyId);
+    const existingNumbers = new Set((portalLines || []).map((l: { line_number: string }) => l.line_number));
+
+    const { data: manualLines } = await admin
+      .from("external_phone_lines")
+      .select("id, line_number")
+      .eq("company_id", manual.id);
+
+    for (const line of manualLines || []) {
+      if (existingNumbers.has(line.line_number)) {
+        await admin.from("external_phone_lines").delete().eq("id", line.id);
+      } else {
+        await admin
+          .from("external_phone_lines")
+          .update({ company_id: portalCompanyId })
+          .eq("id", line.id);
+      }
+    }
+
+    // User mappings: skip Bitrix users already mapped on the portal company
+    const { data: portalMaps } = await admin
+      .from("user_mappings")
+      .select("bitrix24_user_id")
+      .eq("company_id", portalCompanyId);
+    const mappedUsers = new Set((portalMaps || []).map((m: { bitrix24_user_id: string }) => m.bitrix24_user_id));
+
+    const { data: manualMaps } = await admin
+      .from("user_mappings")
+      .select("id, bitrix24_user_id")
+      .eq("company_id", manual.id);
+
+    for (const map of manualMaps || []) {
+      if (mappedUsers.has(map.bitrix24_user_id)) {
+        await admin.from("user_mappings").delete().eq("id", map.id);
+      } else {
+        await admin.from("user_mappings").update({ company_id: portalCompanyId }).eq("id", map.id);
+      }
+    }
+
+    // Call history moves as-is
+    await admin.from("call_logs").update({ company_id: portalCompanyId }).eq("company_id", manual.id);
+
+    // Remove the now-empty duplicate
+    await admin.from("company_members").delete().eq("company_id", manual.id);
+    const { error: delErr } = await admin.from("companies").delete().eq("id", manual.id);
+    if (delErr) console.error("[link-user-to-company] Could not delete manual company:", delErr);
+  }
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -90,6 +188,16 @@ Deno.serve(async (req) => {
     }
 
     console.log("[link-user-to-company] Found company:", company.id, company.name);
+
+    // Consolidate: if this user also belongs to manual companies (no bitrix_member_id),
+    // move their data into the portal company so nothing stays fragmented.
+    try {
+      await consolidateManualCompanies(adminClient, userId, company.id);
+    } catch (e) {
+      console.error("[link-user-to-company] Consolidation failed:", e);
+    }
+
+
 
     // Check if user is already a member
     const { data: existingMember, error: memberCheckError } = await adminClient
