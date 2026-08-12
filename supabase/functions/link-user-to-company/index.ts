@@ -91,6 +91,16 @@ Deno.serve(async (req) => {
 
     console.log("[link-user-to-company] Found company:", company.id, company.name);
 
+    // Consolidate: if this user also belongs to manual companies (no bitrix_member_id),
+    // move their data into the portal company so nothing stays fragmented.
+    try {
+      await consolidateManualCompanies(adminClient, userId, company.id);
+    } catch (e) {
+      console.error("[link-user-to-company] Consolidation failed:", e);
+    }
+
+
+
     // Check if user is already a member
     const { data: existingMember, error: memberCheckError } = await adminClient
       .from("company_members")
