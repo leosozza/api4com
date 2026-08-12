@@ -77,12 +77,20 @@ export function useCompany(bitrixMemberId?: string | null) {
         }
       }
 
+      // Inside Bitrix with a resolved portal company, never fall back to a manual
+      // membership - that is what used to surface the wrong company.
+      if (isInBitrix && bitrixCompanyId) {
+        console.log('[useCompany] In Bitrix with portal company, skipping membership fallback');
+        return null;
+      }
+
       // PRIORITY 2: Find by company_members (for non-Bitrix mode or fallback)
       const { data: membership } = await supabase
         .from('company_members')
         .select('company_id, role')
         .eq('user_id', user.id)
         .maybeSingle();
+
 
       if (membership) {
         const { data: company, error } = await supabase
