@@ -1,37 +1,38 @@
-# Tenant DualWin: diagnóstico e consolidação
+# Corrigir tenant SciTec (e a fragmentação de empresas por portal)
 
-## O que os dados mostram
+## O que está acontecendo
 
-O portal `dualwin.bitrix24.com.br` (member_id `98181653441a68555da7ba1102d6aca6`) existe em **três registros de empresa diferentes**:
+A instalação no portal `scitec.bitrix24.com.br` (05/08) criou a empresa `Portal scitec.bitrix24.com.br` com o `member_id` e as credenciais Bitrix24 — mas ela está com **0 membros e nenhum token Api4Com**.
 
-| Empresa | Criada em | member_id | Credenciais | Chamadas | Membros |
-|---|---|---|---|---|---|
-| `b971eb6d…` DualWin Consultoria Empresarial | 30/01 | ausente | Bitrix24 + Api4Com + 1 linha | 5 | 1 |
-| `4f7844d1…` Portal dualwin.bitrix24.com.br | 30/01 | presente | Api4Com + 1 linha | 0 | 0 |
-| `1cdd794b…` DualWin Consultoria Empresarial | 19/05 | ausente | nenhuma | 0 | 1 |
+Enquanto isso, o usuário que aparece na tela está ligado à empresa manual `DualWin Consultoria Empresarial` (criada em 19/05), e foi **nela** que o token Api4Com `scitec.api4com.com` foi salvo. Por isso a tela mostra "Bitrix24 Conectado: scitec.bitrix24.com.br" (vem do contexto do iframe) sob o nome "DualWin" — são dois registros diferentes.
 
-Sinais de uso:
-- Últimas chamadas registradas: 30/01, 02/02 e 13/02 (5 no total, todas de saída).
-- Último refresh do token Bitrix24: 24/02 (token expirado desde então).
-- Em 19/05 alguém abriu o app e criou uma terceira empresa manual, sem credenciais.
+Resultado: os webhooks e as funções de telefonia procuram a empresa pelo `member_id` do portal, caem na empresa do portal (sem token Api4Com, sem linha, sem mapeamento) e nada funciona.
 
-Conclusão: o tenant **usou** a aplicação em fevereiro e voltou a acessar em maio, mas caiu num perfil vazio. Desde 24/02 não há renovação de token nem chamadas — na prática, hoje está parado.
+Dois problemas confirmados nos dados:
 
-## Causa provável
-
-A auto-vinculação por `bitrix_member_id` resolve para `4f7844d1…`, que está vazia (sem membros, sem credenciais Bitrix). As credenciais reais e o histórico estão em `b971eb6d…`, que não tem `bitrix_member_id`. Quem abre o app pelo portal não enxerga os dados corretos e acaba criando empresa nova — foi o que aconteceu em maio.
+1. **Dados divididos entre duas empresas** do mesmo portal (a do portal e a manual do usuário). O mesmo já havia acontecido com o portal dualwin.
+2. **Endpoint REST errado**: as credenciais do portal scitec estão gravadas com `https://oauth.bitrix.info/rest/` em vez de `https://scitec.bitrix24.com.br/rest/`. Esse endpoint genérico faz os métodos de telefonia falharem com "Method not found".
 
 ## O que fazer
 
-1. **Consolidar o tenant** numa única empresa (`b971eb6d…`, que concentra credenciais e histórico):
-   - mover `bitrix_member_id` do registro `4f7844d1…` para `b971eb6d…`;
-   - migrar linhas/credenciais Api4Com órfãs, removendo duplicatas;
-   - remover/arquivar os registros `4f7844d1…` e `1cdd794b…`.
-2. **Reautorizar o portal**: o token está expirado desde 24/02. O admin precisa reabrir o app no Bitrix24 para gerar novo par de tokens (ou reinstalar, se o refresh também tiver expirado).
-3. **Prevenir recorrência**: na criação/resolução de empresa, quando o app roda dentro do Bitrix, sempre casar por `bitrix_member_id` antes de permitir criar empresa nova, e bloquear a criação manual em contexto de portal já conhecido.
+### 1. Consertar o tenant scitec agora
+- Vincular o usuário atual como admin da empresa do portal `Portal scitec.bitrix24.com.br`.
+- Mover o token Api4Com (`scitec.api4com.com`) da empresa manual para a empresa do portal.
+- Corrigir o `client_endpoint` das credenciais Bitrix24 para o endpoint do portal.
+- Remover a empresa manual duplicada, já vazia depois da migração.
+
+### 2. Consertar o tenant dualwin do mesmo jeito
+Consolidar `Portal dualwin.bitrix24.com.br` com a empresa que tem as credenciais e as 5 chamadas, para não deixar o mesmo problema pendente.
+
+### 3. Evitar que volte a acontecer
+- Na instalação, gravar sempre `https://<domínio>/rest/` como endpoint, ignorando o endpoint OAuth genérico.
+- Ao abrir o app dentro do Bitrix, forçar o vínculo com a empresa do `member_id` **antes** de qualquer fallback por membership, e migrar automaticamente credenciais/linhas/mapeamentos que estejam numa empresa manual do mesmo usuário.
+- Bloquear a criação/uso de empresa manual quando o app roda dentro de um portal já conhecido.
 
 ## Detalhes técnicos
 
-- Consolidação via migração SQL pontual (UPDATE em `companies.bitrix_member_id`, re-parent de `api4com_credentials`/`external_phone_lines`/`call_logs`, DELETE dos duplicados respeitando FKs).
-- Ajuste na Edge Function `link-user-to-company` e no fluxo de `CompanySetup` para não criar empresa quando já existe uma com o `member_id` do portal.
-- Verificação pós-consolidação: `useCompany` deve retornar `b971eb6d…` para qualquer usuário do portal DualWin.
+- Correção de dados via operações pontuais: insert em `company_members`, update de `api4com_credentials.company_id`, update de `bitrix24_credentials.client_endpoint`, delete das empresas duplicadas respeitando as FKs.
+- `supabase/functions/bitrix24-install/index.ts`: normalizar `client_endpoint` (descartar host `oauth.bitrix.info`).
+- `supabase/functions/link-user-to-company/index.ts`: além de vincular, detectar empresa manual do mesmo usuário sem `bitrix_member_id` e re-parentar credenciais/linhas/mapeamentos/chamadas para a empresa do portal.
+- `src/hooks/useCompany.ts`: quando `isInBitrix`, não cair no fallback por `company_members` se o `member_id` resolve uma empresa; hoje o fallback é o que exibe a empresa errada.
+- Verificação: após o ajuste, a tela de Credenciais deve mostrar `Portal scitec.bitrix24.com.br` no cabeçalho com o token Api4Com já preenchido, e `diagnose-telephony` deve responder sem "Method not found".
