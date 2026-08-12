@@ -9,6 +9,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDes
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useCompany } from '@/hooks/useCompany';
 import { useAuth } from '@/hooks/useAuth';
+import { useBitrix } from '@/hooks/useBitrix';
 import { toast } from '@/hooks/use-toast';
 
 const companySchema = z.object({
