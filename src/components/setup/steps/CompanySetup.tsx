@@ -28,6 +28,7 @@ export function CompanySetup({ linkedCompany, onComplete }: CompanySetupProps) {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const { currentCompany, createCompany } = useCompany();
   const { session, ensureSession } = useAuth();
+  const { isInBitrix, refreshAuth } = useBitrix();
   const [sessionReady, setSessionReady] = useState(!!session);
 
   // Use linked company from Bitrix if available
