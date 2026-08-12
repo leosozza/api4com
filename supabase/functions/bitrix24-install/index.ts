@@ -202,6 +202,13 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Telephony REST methods only work against the portal endpoint.
+    // The generic OAuth endpoint (oauth.bitrix.info) returns "Method not found".
+    if (!auth.client_endpoint || auth.client_endpoint.includes("oauth.bitrix.info")) {
+      auth.client_endpoint = `https://${auth.domain}/rest/`;
+      console.log("Normalized client_endpoint to portal endpoint:", auth.client_endpoint);
+    }
+
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
